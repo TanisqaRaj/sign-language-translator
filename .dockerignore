@@ -1,0 +1,16 @@
+venv/
+.env/
+env/
+__pycache__/
+*.py[cod]
+dataset/
+models/*.keras
+models/*.h5
+landmarks.csv
+landmarks.npy
+logs/
+.git/
+.idea/
+.vscode/
+docs/*.png
+tests/

@@ -1,0 +1,35 @@
+# =============================================================================
+# requirements.txt
+# Pinned dependencies for the Real-Time Sign Language Translator project.
+# Tested on Python 3.12 / Windows.
+#
+# Install:
+#   pip install -r requirements.txt
+# =============================================================================
+
+# ── Core Computer Vision ───────────────────────────────────────────────────────
+opencv-python==4.9.0.80          # Webcam capture + frame processing
+
+# ── Hand Landmark Detection ───────────────────────────────────────────────────
+mediapipe==0.10.21               # Google MediaPipe Hands (Python 3.12 compatible)
+
+# ── Deep Learning ─────────────────────────────────────────────────────────────
+tensorflow==2.16.1               # Model training + TFLite conversion (includes Keras 3)
+
+# ── Data Science Utilities ────────────────────────────────────────────────────
+numpy==1.26.4                    # Numerical operations
+pandas==2.2.2                    # CSV handling for landmarks
+scikit-learn==1.4.2              # Train/val split, LabelEncoder, StandardScaler
+matplotlib==3.9.0                # Accuracy/loss graphs
+seaborn==0.13.2                  # Confusion matrix heatmap
+
+# ── Web Application ───────────────────────────────────────────────────────────
+streamlit==1.35.0                # Interactive browser UI
+
+# ── Text-to-Speech ────────────────────────────────────────────────────────────
+pyttsx3==2.90                    # Offline TTS engine (no internet required)
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+Pillow==10.3.0                   # Image I/O helper
+tqdm==4.66.4                     # Progress bars in CLI scripts
+pytest==8.2.2                    # Test runner

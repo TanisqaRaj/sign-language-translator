@@ -1,0 +1,33 @@
+# Virtual environment
+venv/
+.venv/
+
+# Dataset (large image folders)
+dataset/
+
+# Logs
+logs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Compiled model artifacts (keep .tflite and label_map.json, ignore large keras)
+models/*.keras
+models/scaler.pkl

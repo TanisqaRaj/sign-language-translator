@@ -1,0 +1,20 @@
+# requirements_cloud.txt
+# Use this instead of requirements.txt when deploying to Streamlit Cloud,
+# Hugging Face Spaces, Render, or Railway.
+#
+# Key differences from requirements.txt:
+#   + streamlit-webrtc  – browser-based webcam (replaces cv2.VideoCapture)
+#   + aiortc            – WebRTC backend for streamlit-webrtc
+#   - pyttsx3           – removed (TTS handled by browser Web Speech API)
+#   - tensorflow        – replaced with tflite-runtime (smaller, faster install)
+
+opencv-python-headless==4.9.0.80
+mediapipe==0.10.21
+tflite-runtime==2.14.0
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.4.2
+streamlit==1.35.0
+streamlit-webrtc==0.47.6
+aiortc==1.9.0
+Pillow==10.3.0
