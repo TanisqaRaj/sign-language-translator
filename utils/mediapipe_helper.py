@@ -23,14 +23,21 @@ class HandDetector:
     landmarks, annotated_frame = detector.find_landmarks(frame)
     """
 
-    def __init__(self) -> None:
-        """Initialise the MediaPipe Hands solution with project-level config."""
+    def __init__(self, static_image_mode: bool = False) -> None:
+        """Initialise the MediaPipe Hands solution with project-level config.
+        
+        Parameters
+        ----------
+        static_image_mode : bool
+            True  → static image mode (for preprocessing images, higher accuracy)
+            False → video stream mode (for real-time inference, faster tracking)
+        """
         self._mp_hands = mp.solutions.hands
         self._mp_draw  = mp.solutions.drawing_utils
         self._mp_style = mp.solutions.drawing_styles
 
         self.hands = self._mp_hands.Hands(
-            static_image_mode=False,          # Video-stream mode (faster)
+            static_image_mode=static_image_mode,
             max_num_hands=MAX_NUM_HANDS,
             min_detection_confidence=MIN_DETECTION_CONF,
             min_tracking_confidence=MIN_TRACKING_CONF,

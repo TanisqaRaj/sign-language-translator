@@ -40,6 +40,35 @@ MIN_TRACKING_CONF    = 0.5      # Minimum hand tracking confidence
 NUM_LANDMARKS        = 21       # MediaPipe Hands always returns 21 landmarks
 LANDMARK_FEATURES    = NUM_LANDMARKS * 2   # x, y per landmark = 42 features
 
+# ── MoveNet (Body Pose) ───────────────────────────────────────────────────────
+# MoveNet Lightning: fast single-pose model, suitable for real-time on CPU.
+# TF-Hub URL — loaded once at startup, cached locally after first download.
+MOVENET_MODEL_URL  = "https://tfhub.dev/google/movenet/singlepose/lightning/4"
+MOVENET_INPUT_SIZE = 192      # MoveNet Lightning expects 192×192 RGB input
+MOVENET_THRESHOLD  = 0.2      # Keypoints below this confidence are zeroed out
+
+# MoveNet returns 17 keypoints; we keep (x, y) per keypoint = 34 pose features
+NUM_POSE_KEYPOINTS = 17
+POSE_FEATURES      = NUM_POSE_KEYPOINTS * 2   # 34 features
+
+# Human-readable keypoint names (MoveNet ordering, 0-indexed)
+POSE_KEYPOINT_NAMES = [
+    "nose",
+    "left_eye",  "right_eye",
+    "left_ear",  "right_ear",
+    "left_shoulder",  "right_shoulder",
+    "left_elbow",     "right_elbow",
+    "left_wrist",     "right_wrist",
+    "left_hip",       "right_hip",
+    "left_knee",      "right_knee",
+    "left_ankle",     "right_ankle",
+]
+
+# ── Hybrid Feature Vector ─────────────────────────────────────────────────────
+# MediaPipe hand landmarks (42) + MoveNet body pose (34) = 76 total features.
+# All downstream scripts (preprocess, train, inference) use HYBRID_FEATURES.
+HYBRID_FEATURES    = LANDMARK_FEATURES + POSE_FEATURES   # 42 + 34 = 76
+
 # ── Model ─────────────────────────────────────────────────────────────────────
 MODEL_DIR         = os.path.join(BASE_DIR, "models")
 MODEL_KERAS_PATH  = os.path.join(MODEL_DIR, "gesture_model.keras")

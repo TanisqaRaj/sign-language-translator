@@ -15,6 +15,9 @@ mediapipe==0.10.21               # Google MediaPipe Hands (Python 3.12 compatibl
 
 # ── Deep Learning ─────────────────────────────────────────────────────────────
 tensorflow==2.16.1               # Model training + TFLite conversion (includes Keras 3)
+ai-edge-litert                   # TFLite interpreter for TF 2.20+ (replaces tf.lite.Interpreter)
+# Note: MoveNet Lightning TFLite model is auto-downloaded via urllib on first run
+# (no tensorflow-hub needed — avoids Python 3.12 pkg_resources incompatibility)
 
 # ── Data Science Utilities ────────────────────────────────────────────────────
 numpy==1.26.4                    # Numerical operations

@@ -3,12 +3,13 @@
 # Training pipeline for the Real-Time Sign Language Translator.
 #
 # Architecture note — Dense Neural Network (DNN), NOT a CNN:
-#   MediaPipe already distils each hand frame into 21 (x, y) landmark
-#   coordinates, giving us a flat 42-feature vector.  That is tabular /
-#   structured data — there is no 2-D spatial locality to exploit, so
-#   convolutional layers would add parameters and complexity with no benefit.
-#   A well-regularised DNN trains faster, generalises better on this data,
-#   and converts to a tiny TFLite model suitable for real-time inference.
+#   The hybrid pipeline distils each frame into a flat 76-feature vector:
+#   42 MediaPipe hand landmarks (x,y × 21) + 34 MoveNet pose keypoints
+#   (x,y × 17).  That is tabular / structured data — there is no 2-D spatial
+#   locality to exploit, so convolutional layers would add parameters and
+#   complexity with no benefit.  A well-regularised DNN trains faster,
+#   generalises better on this data, and converts to a tiny TFLite model
+#   suitable for real-time inference.
 # ─────────────────────────────────────────────────────────────────────────────
 
 import json
@@ -45,6 +46,7 @@ from tensorflow.keras.optimizers import Adam
 from config import (
     BATCH_SIZE,
     EPOCHS,
+    HYBRID_FEATURES,
     LABEL_MAP_PATH,
     LANDMARK_FEATURES,
     LANDMARKS_CSV,
@@ -114,14 +116,15 @@ def load_data(csv_path: str) -> tuple[pd.DataFrame, pd.Series]:
         raise ValueError("CSV must contain a 'label' column.")
 
     feature_cols = [c for c in df.columns if c != "label"]
-    if len(feature_cols) < LANDMARK_FEATURES:
+    if len(feature_cols) < HYBRID_FEATURES:
         raise ValueError(
-            f"Expected at least {LANDMARK_FEATURES} feature columns, "
-            f"found {len(feature_cols)}."
+            f"Expected at least {HYBRID_FEATURES} feature columns, "
+            f"found {len(feature_cols)}.\n"
+            "Re-run preprocess.py with the hybrid pipeline to regenerate landmarks.csv."
         )
 
-    # Use exactly the first LANDMARK_FEATURES columns as features
-    feature_cols = feature_cols[:LANDMARK_FEATURES]
+    # Use exactly the first HYBRID_FEATURES columns as features
+    feature_cols = feature_cols[:HYBRID_FEATURES]
 
     X = df[feature_cols]
     y = df["label"]
@@ -284,23 +287,20 @@ def normalize_features(
 # Model architecture & callbacks
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_model(num_classes: int, input_dim: int = LANDMARK_FEATURES) -> Model:
+def build_model(num_classes: int, input_dim: int = HYBRID_FEATURES) -> Model:
     """Build and compile the Dense Neural Network classifier.
 
     Why a DNN and not a CNN?
     ─────────────────────────
-    The input to this model is a flat 42-element vector of (x, y) landmark
-    coordinates extracted by MediaPipe — pure tabular / structured data.
-    CNNs are designed to learn spatial hierarchies from grid-like data
-    (images, time-frequency spectrograms).  Feeding a 1-D landmark vector
-    into a CNN would require artificial reshaping and would not yield any
-    meaningful spatial patterns.  A DNN with BatchNormalization and Dropout
-    achieves strong accuracy on this task with far fewer parameters and
-    trains ~10× faster on CPU.
+    The input is a flat 76-element hybrid vector: 42 MediaPipe hand-landmark
+    coordinates + 34 MoveNet body-pose coordinates.  This is tabular /
+    structured data with no 2-D spatial locality.  A DNN with
+    BatchNormalization and Dropout achieves strong accuracy on this task with
+    far fewer parameters and trains ~10× faster on CPU than a CNN would.
 
     Architecture
     ─────────────
-    Input(42)
+    Input(76)
       → Dense(256, relu) → BatchNorm → Dropout(0.4)
       → Dense(128, relu) → BatchNorm → Dropout(0.3)
       → Dense(64,  relu) →            Dropout(0.2)
@@ -311,7 +311,7 @@ def build_model(num_classes: int, input_dim: int = LANDMARK_FEATURES) -> Model:
     num_classes : int
         Number of gesture classes — determines the output layer width.
     input_dim : int, optional
-        Number of input features (default: 42 from ``config.LANDMARK_FEATURES``).
+        Number of input features (default: 76 from ``config.HYBRID_FEATURES``).
 
     Returns
     -------
@@ -319,7 +319,8 @@ def build_model(num_classes: int, input_dim: int = LANDMARK_FEATURES) -> Model:
         Compiled Keras model ready for training.
     """
     logger.info(
-        "Building DNN — input_dim: %d, num_classes: %d", input_dim, num_classes
+        "Building DNN — input_dim: %d (hand=%d + pose=%d), num_classes: %d",
+        input_dim, LANDMARK_FEATURES, input_dim - LANDMARK_FEATURES, num_classes
     )
 
     inputs = Input(shape=(input_dim,), name="landmarks_input")

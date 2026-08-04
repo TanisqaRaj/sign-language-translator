@@ -1,13 +1,14 @@
 # =============================================================================
 # inference.py
-# Phase 6 – Real-Time Inference Pipeline (Standalone OpenCV Window)
+# Phase 6 – Real-Time Hybrid Inference Pipeline (Standalone OpenCV Window)
 # =============================================================================
 # Usage:
 #   python inference.py
 #
-# Opens the webcam, detects the hand with MediaPipe, extracts landmarks,
-# runs the TFLite model, smooths predictions over a rolling buffer, and
-# overlays the recognised gesture + confidence score on the live feed.
+# Opens the webcam, extracts the 76-feature hybrid vector per frame
+# (42 MediaPipe hand landmarks + 34 MoveNet pose keypoints), runs the
+# TFLite model, smooths predictions over a rolling buffer, and overlays
+# the recognised gesture + confidence score on the live feed.
 #
 # Controls:
 #   Q – quit
@@ -35,11 +36,14 @@ from config import (
     MODEL_TFLITE_PATH,
     LABEL_MAP_PATH,
     MODEL_DIR,
+    HYBRID_FEATURES,
     LANDMARK_FEATURES,
+    POSE_FEATURES,
     SCALER_PATH,
 )
 from utils.logger           import get_logger
 from utils.mediapipe_helper import HandDetector
+from utils.movenet_helper   import MoveNetDetector
 from utils.tts_engine       import TTSEngine
 from preprocess             import normalise_landmarks
 
@@ -87,13 +91,9 @@ def load_label_map() -> dict[int, str]:
     """
     Load the integer → gesture-name mapping from label_map.json.
 
-    label_map.json is saved as {"Hello": 0, "Yes": 1, …} (str → int).
+    label_map.json stores {"Hello": 0, "Yes": 1, …} (str → int).
     This function inverts it to {0: "Hello", 1: "Yes", …} (int → str)
     for fast lookup during inference.
-
-    Returns
-    -------
-    dict mapping class index (int) to gesture name (str).
     """
     if not os.path.exists(LABEL_MAP_PATH):
         raise FileNotFoundError(
@@ -101,8 +101,7 @@ def load_label_map() -> dict[int, str]:
             "Run preprocess.py and train_model.py first."
         )
     with open(LABEL_MAP_PATH) as f:
-        raw = json.load(f)          # { "Hello": 0, "Yes": 1, … }
-    # Invert: { 0: "Hello", 1: "Yes", … }
+        raw = json.load(f)
     inv = {int(v): k for k, v in raw.items()}
     logger.info("Label map loaded (%d classes).", len(inv))
     return inv
@@ -112,8 +111,7 @@ def load_scaler():
     """
     Load the StandardScaler fitted during training.
 
-    Returns None if the scaler file does not exist (older models may not
-    have one — inference still works, just without scaling).
+    Returns None if the scaler file does not exist.
     """
     if os.path.exists(SCALER_PATH):
         with open(SCALER_PATH, "rb") as f:
@@ -125,11 +123,60 @@ def load_scaler():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Hybrid feature extraction
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_hybrid_features(
+    frame: np.ndarray,
+    hand_detector: HandDetector,
+    pose_detector: MoveNetDetector,
+) -> list[float] | None:
+    """
+    Extract the 76-feature hybrid vector from a single live frame.
+
+    Feature layout
+    --------------
+    [0  … 41]  42 normalised hand-landmark features  (MediaPipe Hands)
+    [42 … 75]  34 normalised body-pose features       (MoveNet Lightning)
+
+    Parameters
+    ----------
+    frame         : BGR frame from the webcam (already flipped)
+    hand_detector : shared HandDetector instance
+    pose_detector : shared MoveNetDetector instance
+
+    Returns
+    -------
+    list[float] of length 76, or None if no hand is detected.
+    The frame is annotated in-place by both detectors when a signal is found.
+    """
+    # ── MediaPipe: hand landmarks ─────────────────────────────────────────────
+    raw_lm, _ = hand_detector.find_landmarks(frame, draw=True)
+
+    # If no hand is visible, skip this frame entirely
+    if raw_lm is None:
+        return None
+
+    hand_features = normalise_landmarks(raw_lm)   # 42 floats
+
+    # ── MoveNet: body pose ────────────────────────────────────────────────────
+    pose_raw, _ = pose_detector.detect(frame, draw=True)
+
+    if pose_raw is not None:
+        pose_features = MoveNetDetector.normalise_pose(pose_raw)  # 34 floats
+    else:
+        # Person not in frame — zero-fill pose block, keep hand features
+        pose_features = [0.0] * POSE_FEATURES
+
+    return hand_features + pose_features   # 76 floats
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Inference
 # ─────────────────────────────────────────────────────────────────────────────
 
 def predict(
-    landmarks_flat: list[float],
+    features: list[float],
     interpreter,
     input_idx: int,
     output_idx: int,
@@ -141,30 +188,29 @@ def predict(
 
     Parameters
     ----------
-    landmarks_flat : 42 normalised floats from HandDetector
-    interpreter    : TFLite interpreter
-    input_idx      : index of the input tensor
-    output_idx     : index of the output tensor
-    label_map      : {class_int: gesture_name}
-    scaler         : fitted StandardScaler or None
+    features    : 76-element hybrid feature vector
+    interpreter : TFLite interpreter
+    input_idx   : index of the input tensor
+    output_idx  : index of the output tensor
+    label_map   : {class_int: gesture_name}
+    scaler      : fitted StandardScaler or None
 
     Returns
     -------
-    (gesture_name, confidence)  –  best predicted class and its probability
+    (gesture_name, confidence)
     """
-    features = np.array(landmarks_flat, dtype=np.float32).reshape(1, -1)
+    x = np.array(features, dtype=np.float32).reshape(1, -1)
 
-    # Apply the same scaling used during training
     if scaler is not None:
-        features = scaler.transform(features).astype(np.float32)
+        x = scaler.transform(x).astype(np.float32)
 
-    interpreter.set_tensor(input_idx, features)
+    interpreter.set_tensor(input_idx, x)
     interpreter.invoke()
 
-    probabilities   = interpreter.get_tensor(output_idx)[0]
-    class_idx       = int(np.argmax(probabilities))
-    confidence      = float(probabilities[class_idx])
-    gesture_name    = label_map.get(class_idx, f"Class_{class_idx}")
+    probabilities = interpreter.get_tensor(output_idx)[0]
+    class_idx     = int(np.argmax(probabilities))
+    confidence    = float(probabilities[class_idx])
+    gesture_name  = label_map.get(class_idx, f"Class_{class_idx}")
 
     return gesture_name, confidence
 
@@ -186,28 +232,17 @@ class PredictionSmoother:
         self._buffer = collections.deque(maxlen=buffer_len)
 
     def update(self, gesture: str, confidence: float) -> tuple[str | None, float]:
-        """
-        Add a new prediction and return the smoothed result.
-
-        Returns
-        -------
-        (smoothed_gesture, confidence)
-            smoothed_gesture is None if confidence is too low or no majority.
-        """
+        """Add a new prediction and return the smoothed result."""
         if confidence < CONFIDENCE_THRESHOLD:
             self._buffer.append(None)
             return None, confidence
 
         self._buffer.append(gesture)
-
-        # Majority vote
-        counts  = collections.Counter(g for g in self._buffer if g is not None)
+        counts = collections.Counter(g for g in self._buffer if g is not None)
         if not counts:
             return None, confidence
 
         best, votes = counts.most_common(1)[0]
-        # Require votes > half of the full buffer capacity (not current length)
-        # so a single prediction after reset cannot win the majority.
         required = self._buffer.maxlen // 2
         if votes > required:
             return best, confidence
@@ -229,6 +264,7 @@ def draw_hud(
     sentence: list[str],
     fps: float,
     stable_frames: int,
+    pose_active: bool,
 ) -> np.ndarray:
     """
     Render the heads-up display over the camera frame.
@@ -238,19 +274,20 @@ def draw_hud(
     frame         : BGR frame
     gesture       : current smoothed prediction (None = no detection)
     confidence    : prediction confidence 0-1
-    sentence      : list of confirmed words added to the sentence buffer
+    sentence      : list of confirmed words
     fps           : current frames per second
-    stable_frames : how many consecutive frames the gesture has been stable
+    stable_frames : consecutive frames the gesture has been stable
+    pose_active   : whether MoveNet detected a person this frame
     """
     h, w = frame.shape[:2]
 
     # ── Top panel ─────────────────────────────────────────────────────────────
     overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (w, 90), BLACK, -1)
+    cv2.rectangle(overlay, (0, 0), (w, 100), BLACK, -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
 
     if gesture:
-        color = GREEN
+        color      = GREEN
         label_text = f"Gesture: {gesture}"
         conf_text  = f"Confidence: {confidence:.0%}"
         stable_pct = min(stable_frames / STABLE_FRAME_COUNT, 1.0)
@@ -264,16 +301,22 @@ def draw_hud(
     if conf_text:
         cv2.putText(frame, conf_text, (10, 58), FONT, 0.65, WHITE, 1)
 
+    # Pose indicator dot
+    pose_dot_color = GREEN if pose_active else RED
+    cv2.circle(frame, (w - 20, 15), 7, pose_dot_color, -1)
+    cv2.putText(frame, "Pose", (w - 65, 20), FONT, 0.4,
+                GREEN if pose_active else RED, 1)
+
     # Stability progress bar
     bar_w = w - 20
-    cv2.rectangle(frame, (10, 68), (10 + bar_w, 82), (60, 60, 60), -1)
+    cv2.rectangle(frame, (10, 72), (10 + bar_w, 86), (60, 60, 60), -1)
     fill  = int(bar_w * stable_pct)
     bar_c = (0, int(200 * stable_pct), int(200 * (1 - stable_pct)))
     if fill > 0:
-        cv2.rectangle(frame, (10, 68), (10 + fill, 82), bar_c, -1)
+        cv2.rectangle(frame, (10, 72), (10 + fill, 86), bar_c, -1)
 
     # ── FPS counter (top-right) ───────────────────────────────────────────────
-    cv2.putText(frame, f"FPS: {fps:.1f}", (w - 110, 25), FONT, 0.6, CYAN, 1)
+    cv2.putText(frame, f"FPS: {fps:.1f}", (w - 120, 50), FONT, 0.6, CYAN, 1)
 
     # ── Sentence panel (bottom) ───────────────────────────────────────────────
     overlay2 = frame.copy()
@@ -295,29 +338,30 @@ def draw_hud(
 
 def run_inference() -> None:
     """
-    Open the webcam and run the full real-time inference loop.
+    Open the webcam and run the full real-time hybrid inference loop.
 
     Flow per frame
     --------------
     1. Capture frame → flip (mirror)
-    2. Detect hand with MediaPipe
-    3. Normalise landmarks
-    4. TFLite forward pass
-    5. Smooth prediction via rolling buffer
-    6. Track stable frames → add word to sentence when stable
-    7. Draw HUD
-    8. Handle key presses
+    2. Extract hybrid features: MediaPipe hand (42) + MoveNet pose (34) = 76
+    3. TFLite forward pass on 76-feature vector
+    4. Smooth prediction via rolling majority-vote buffer
+    5. Track stable frames → add word to sentence when stable
+    6. Draw HUD with gesture, confidence, pose indicator, FPS, sentence
+    7. Handle key presses (Q / C / S)
     """
-    # ── Load resources ────────────────────────────────────────────────────────
-    logger.info("Initialising inference pipeline…")
-    print("\n🤙  Sign Language Translator – Real-Time Inference\n")
+    logger.info("Initialising hybrid inference pipeline…")
+    print("\n🤙  Sign Language Translator – Real-Time Hybrid Inference")
+    print(f"   Features: {LANDMARK_FEATURES} hand + {POSE_FEATURES} pose = {HYBRID_FEATURES} total\n")
 
+    # ── Load resources ────────────────────────────────────────────────────────
     interpreter, input_idx, output_idx = load_tflite_model()
-    label_map = load_label_map()
-    scaler    = load_scaler()
-    detector  = HandDetector()
-    smoother  = PredictionSmoother()
-    tts       = TTSEngine()
+    label_map     = load_label_map()
+    scaler        = load_scaler()
+    hand_detector = HandDetector()
+    pose_detector = MoveNetDetector()   # downloads MoveNet on first run
+    smoother      = PredictionSmoother()
+    tts           = TTSEngine()
 
     # ── Open webcam ───────────────────────────────────────────────────────────
     cap = cv2.VideoCapture(CAMERA_INDEX)
@@ -328,13 +372,12 @@ def run_inference() -> None:
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS,          30)
 
-    sentence       = []       # Words added to the running sentence
-    stable_frames  = 0        # Consecutive frames with same gesture
-    last_stable    = None     # The gesture currently being held
+    sentence      = []
+    stable_frames = 0
+    last_stable   = None
 
-    # FPS calculation
-    fps      = 0.0
-    t_prev   = time.perf_counter()
+    fps    = 0.0
+    t_prev = time.perf_counter()
 
     logger.info("Inference loop started.")
     print("  Press Q to quit | C to clear sentence | S to speak\n")
@@ -348,16 +391,20 @@ def run_inference() -> None:
 
             frame = cv2.flip(frame, 1)
 
-            # ── Hand detection + landmarks ────────────────────────────────────
-            raw_lm, annotated = detector.find_landmarks(frame, draw=True)
+            # ── Hybrid feature extraction ─────────────────────────────────────
+            features = extract_hybrid_features(frame, hand_detector, pose_detector)
 
-            gesture    = None
-            confidence = 0.0
+            gesture     = None
+            confidence  = 0.0
+            pose_active = False
 
-            if raw_lm is not None:
-                norm_lm          = normalise_landmarks(raw_lm)
-                raw_pred, conf   = predict(norm_lm, interpreter, input_idx,
-                                           output_idx, label_map, scaler)
+            if features is not None:
+                # Detect whether pose was active (any non-zero in pose block)
+                pose_block  = features[LANDMARK_FEATURES:]
+                pose_active = any(v != 0.0 for v in pose_block)
+
+                raw_pred, conf      = predict(features, interpreter, input_idx,
+                                              output_idx, label_map, scaler)
                 gesture, confidence = smoother.update(raw_pred, conf)
             else:
                 smoother.reset()
@@ -370,7 +417,6 @@ def run_inference() -> None:
                     stable_frames = 1
                     last_stable   = gesture
 
-                # Add to sentence when gesture held for STABLE_FRAME_COUNT frames
                 if stable_frames == STABLE_FRAME_COUNT:
                     if not sentence or sentence[-1] != gesture:
                         sentence.append(gesture)
@@ -385,9 +431,9 @@ def run_inference() -> None:
             t_prev = t_now
 
             # ── Draw HUD ──────────────────────────────────────────────────────
-            annotated = draw_hud(annotated, gesture, confidence,
-                                 sentence, fps, stable_frames)
-            cv2.imshow("Sign Language Translator – Press Q to quit", annotated)
+            frame = draw_hud(frame, gesture, confidence,
+                             sentence, fps, stable_frames, pose_active)
+            cv2.imshow("Sign Language Translator – Press Q to quit", frame)
 
             # ── Key handling ──────────────────────────────────────────────────
             key = cv2.waitKey(1) & 0xFF
@@ -407,8 +453,8 @@ def run_inference() -> None:
     finally:
         cap.release()
         cv2.destroyAllWindows()
-        detector.close()
-        logger.info("Inference pipeline stopped.")
+        hand_detector.close()
+        logger.info("Hybrid inference pipeline stopped.")
         print("\n  Inference stopped.")
 
 

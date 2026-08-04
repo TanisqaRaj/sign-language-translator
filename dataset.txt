@@ -1,0 +1,76 @@
+ASL Alphabet:
+#!/bin/bash
+curl -L -o ~/Downloads/asl-alphabet.zip\
+  https://www.kaggle.com/api/v1/datasets/download/grassknoted/asl-alphabet
+
+sign-language-mnist
+
+#!/bin/bash
+curl -L -o ~/Downloads/sign-language-mnist.zip\
+  https://www.kaggle.com/api/v1/datasets/download/datamunge/sign-language-mnist
+
+WLASL
+https://datasetsearch.research.google.com/search?src=0&query=WLASL&docid=L2cvMTFzazU4ZDZqcA%3D%3D
+
+
+MS-ASL
+https://datasetsearch.research.google.com/search?src=0&query=MS-ASL&docid=L2cvMTF5d3QxM3JtNQ%3D%3D
+
+ASLLVD
+https://datasetsearch.research.google.com/search?src=0&query=ASLLVD%20(ASL%20Lexicon%20Video%20Dataset)&docid=L2cvMTF3M3Y3M2x0NQ%3D%3D
+
+chicagofswild
+#!/bin/bash
+curl -L -o ~/Downloads/chicagofswild.zip\
+  https://www.kaggle.com/api/v1/datasets/download/joebeachcapital/chicagofswild
+
+Fingerspelling
+https://datasetsearch.research.google.com/search?src=0&query=ASL%20Fingerspelling%20Dataset&docid=L2cvMTFsMjB0ZndtbQ%3D%3D
+
+How2Sign
+https://datasetsearch.research.google.com/search?src=0&query=How2Sign&docid=L2cvMTF5cDlzamtkcA%3D%3D
+
+
+chicagofswild
+
+#!/bin/bash
+curl -L -o ~/Downloads/chicagofswild.zip\
+  https://www.kaggle.com/api/v1/datasets/download/joebeachcapital/chicagofswild
+
+
+
+ISL-CSLTR
+
+
+https://datasetsearch.research.google.com/search?src=0&query=ISL-CSLTR&docid=L2cvMTF5cDlfYzExcg%3D%3D
+
+
+ISLRTC
+
+https://datasetsearch.research.google.com/search?src=0&query=ISLRTC%20Dataset&docid=L2cvMTFuYng4MzN5Zg%3D%3D
+
+ISL
+
+https://datasetsearch.research.google.com/search?src=0&query=ISL%20Gesture%20Dataset&docid=L2cvMTF2Y20wODY0dg%3D%3D
+
+
+IIIT
+https://datasetsearch.research.google.com/search?src=0&query=IIIT-H%20ISL%20Dataset&docid=L2cvMTF2Y20wODY0dg%3D%3D
+
+
+IITM
+https://datasetsearch.research.google.com/search?src=0&query=IITM%20ISL%20Dataset&docid=L2cvMTF3YmoxNWQ1bg%3D%3D
+
+ISL
+
+https://datasetsearch.research.google.com/search?src=0&query=ISL%20Alphabet%20Dataset&docid=L2cvMTF5cXJ4cWg3MA%3D%3D
+
+ISL
+https://datasetsearch.research.google.com/search?src=0&query=ISL%20Digits%20Dataset&docid=L2cvMTF5bWZnczZtZg%3D%3D
+
+ISL
+
+https://datasetsearch.research.google.com/search?src=0&query=Custom%20ISL%20Dataset&docid=L2cvMTF2Y20wODY0dg%3D%3D
+
+
+

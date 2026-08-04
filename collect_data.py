@@ -249,18 +249,20 @@ def collect_for_gesture(gesture: str, detector: HandDetector) -> int:
             frame = cv2.flip(frame, 1)   # Mirror so it feels natural
 
             # ── Hand detection ────────────────────────────────────────────────
+            # Keep a clean copy for saving — draw only on display copy
+            clean_frame = frame.copy()
             landmarks, annotated = detector.find_landmarks(frame, draw=True)
             hand_detected        = landmarks is not None
 
             status = ""
             if not paused and hand_detected:
-                if is_blurry(frame):
+                if is_blurry(clean_frame):
                     status       = "Blurry frame – skipped"
                     skipped_blur += 1
                 else:
-                    # ── Save image ────────────────────────────────────────────
+                    # ── Save CLEAN image (no landmark annotations) ────────────
                     filename = os.path.join(save_dir, f"img_{collected + 1:04d}.jpg")
-                    cv2.imwrite(filename, frame)
+                    cv2.imwrite(filename, clean_frame)
                     collected += 1
                     pbar.update(1)
             elif not hand_detected:
