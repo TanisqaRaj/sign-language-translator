@@ -37,9 +37,11 @@ from config import (
 )
 from utils.logger           import get_logger
 from utils.mediapipe_helper import HandDetector
+from utils.movenet_helper   import MoveNetDetector
 from utils.tts_engine       import TTSEngine
 from preprocess             import normalise_landmarks
 from inference              import load_tflite_model, load_label_map, load_scaler, predict, PredictionSmoother
+from config                 import POSE_FEATURES
 
 logger = get_logger(__name__)
 
@@ -151,21 +153,17 @@ def init_session_state() -> None:
 
 @st.cache_resource(show_spinner="Loading model…")
 def get_model_resources():
-    """
-    Load and cache the TFLite model, label map, scaler, HandDetector, and TTS.
-
-    Returns None, None, None, None, None on any loading error.
-    """
     try:
         interpreter, input_idx, output_idx = load_tflite_model()
-        label_map = load_label_map()
-        scaler    = load_scaler()
-        detector  = HandDetector()
-        tts       = TTSEngine()
-        return interpreter, input_idx, output_idx, label_map, scaler, detector, tts
+        label_map    = load_label_map()
+        scaler       = load_scaler()
+        detector     = HandDetector()
+        pose_detector = MoveNetDetector()
+        tts          = TTSEngine()
+        return interpreter, input_idx, output_idx, label_map, scaler, detector, pose_detector, tts
     except FileNotFoundError as exc:
         st.session_state["error_msg"] = str(exc)
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,29 +178,22 @@ def process_frame(
     label_map: dict,
     scaler,
     detector: HandDetector,
+    pose_detector: MoveNetDetector,
     smoother: PredictionSmoother,
 ) -> tuple[np.ndarray, str | None, float]:
-    """
-    Run one complete inference cycle on a single frame.
-
-    Parameters
-    ----------
-    frame       : BGR webcam frame
-    (all others): loaded model resources and smoother
-
-    Returns
-    -------
-    (annotated_frame, gesture_name_or_None, confidence)
-    """
     raw_lm, annotated = detector.find_landmarks(frame, draw=True)
 
     if raw_lm is None:
         smoother.reset()
         return annotated, None, 0.0
 
-    norm_lm           = normalise_landmarks(raw_lm)
-    raw_pred, conf    = predict(norm_lm, interpreter, input_idx,
-                                output_idx, label_map, scaler)
+    hand_features = normalise_landmarks(raw_lm)
+
+    pose_raw, _ = pose_detector.detect(frame, draw=False)
+    pose_features = MoveNetDetector.normalise_pose(pose_raw) if pose_raw is not None else [0.0] * POSE_FEATURES
+
+    features = hand_features + pose_features
+    raw_pred, conf = predict(features, interpreter, input_idx, output_idx, label_map, scaler)
     gesture, confidence = smoother.update(raw_pred, conf)
     return annotated, gesture, confidence
 
@@ -296,23 +287,23 @@ def render_main_ui(
 
         btn_col1, btn_col2, btn_col3 = st.columns(3)
         with btn_col1:
-            if st.button("🔊 Speak", use_container_width=True, type="primary"):
+            if st.button("🔊 Speak", key="btn_speak", use_container_width=True, type="primary"):
                 if words:
                     resources = get_model_resources()
-                    tts       = resources[6]
+                    tts       = resources[7]
                     if tts:
                         tts.speak(" ".join(words), force=True)
         with btn_col2:
-            if st.button("🗑️ Clear", use_container_width=True):
+            if st.button("🗑️ Clear", key="btn_clear", use_container_width=True):
                 st.session_state["sentence"]       = []
                 st.session_state["current_gesture"] = "—"
                 st.session_state["stable_frames"]  = 0
                 resources = get_model_resources()
-                if resources[6]:
-                    resources[6].reset_last_spoken()
+                if resources[7]:
+                    resources[7].reset_last_spoken()
                 st.rerun()
         with btn_col3:
-            if st.button("⬅️ Undo", use_container_width=True):
+            if st.button("⬅️ Undo", key="btn_undo", use_container_width=True):
                 if st.session_state["sentence"]:
                     st.session_state["sentence"].pop()
                     st.rerun()
@@ -330,6 +321,7 @@ def run_webcam_loop(
     label_map,
     scaler,
     detector,
+    pose_detector,
     tts,
     gesture_placeholder,
     sentence_placeholder,
@@ -369,7 +361,7 @@ def run_webcam_loop(
             frame    = cv2.flip(frame, 1)
             annotated, gesture, confidence = process_frame(
                 frame, interpreter, input_idx, output_idx,
-                label_map, scaler, detector, smoother,
+                label_map, scaler, detector, pose_detector, smoother,
             )
 
             # ── FPS ───────────────────────────────────────────────────────────
@@ -401,13 +393,31 @@ def run_webcam_loop(
             st.session_state["stable_frames"]   = stable_frames
             st.session_state["fps"]             = fps
 
-            # ── Display frame ─────────────────────────────────────────────────
+            # ── Display frame only (no buttons inside loop) ───────────────────
             rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-            frame_placeholder.image(rgb, channels="RGB", use_container_width=True)
+            frame_placeholder.image(rgb, channels="RGB", use_column_width=True)
 
-            # ── Update info panel ─────────────────────────────────────────────
-            render_main_ui(col_video, col_info, frame_placeholder,
-                           gesture_placeholder, sentence_placeholder)
+            # ── Update prediction card only (no buttons) ──────────────────────
+            gesture_val = st.session_state["current_gesture"]
+            conf_val    = st.session_state["confidence"]
+            with gesture_placeholder.container():
+                st.markdown(f"""
+                <div class="pred-card">
+                    <div class="pred-gesture">{gesture_val}</div>
+                    <div class="pred-conf">Confidence: {conf_val:.0%}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.progress(conf_val, text="Confidence")
+                stable_pct = min(stable_frames / max(STABLE_FRAME_COUNT, 1), 1.0)
+                st.progress(stable_pct, text=f"Stability ({stable_frames}/{STABLE_FRAME_COUNT})")
+
+            # ── Update sentence display only (no buttons) ─────────────────────
+            words        = st.session_state["sentence"]
+            sentence_str = " ".join(words) if words else "*(waiting for gestures…)*"
+            with sentence_placeholder.container():
+                st.markdown("### 📝 Sentence Builder")
+                st.markdown(f'<div class="sentence-box">{sentence_str}</div>',
+                            unsafe_allow_html=True)
 
     finally:
         cap.release()
@@ -438,7 +448,7 @@ def main() -> None:
     # ── Load resources ──────────────────────────────────────────────────────────
     resources = get_model_resources()
     (interpreter, input_idx, output_idx,
-     label_map, scaler, detector, tts) = resources
+     label_map, scaler, detector, pose_detector, tts) = resources
 
     if interpreter is not None:
         st.session_state["model_loaded"] = True
@@ -454,7 +464,7 @@ def main() -> None:
 
         # Start / Stop button
         if not st.session_state["running"]:
-            if st.button("▶️ Start Camera", type="primary", use_container_width=True):
+            if st.button("▶️ Start Camera", key="btn_start", type="primary", use_container_width=True):
                 if interpreter is None:
                     st.error("Model not loaded. Run train_model.py and convert_tflite.py first.")
                 else:
@@ -485,7 +495,7 @@ def main() -> None:
         run_webcam_loop(
             frame_placeholder,
             interpreter, input_idx, output_idx,
-            label_map, scaler, detector, tts,
+            label_map, scaler, detector, pose_detector, tts,
             gesture_placeholder, sentence_placeholder,
             col_video, col_info,
         )
