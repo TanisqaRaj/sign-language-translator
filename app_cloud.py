@@ -297,11 +297,6 @@ def render_sidebar() -> None:
         st.markdown('<div class="clay-section-title">Navigation</div>',
                     unsafe_allow_html=True)
         for page in NAV_PAGES:
-            is_active = st.session_state["page"] == page
-            btn_style = (
-                "background:linear-gradient(135deg,#312e81,#1e1b4b);"
-                "border:1px solid rgba(139,92,246,0.5);"
-            ) if is_active else ""
             if st.button(page, key=f"nav_{page}", use_container_width=True):
                 st.session_state["page"] = page
                 st.rerun()
@@ -569,8 +564,7 @@ def page_live_translator() -> None:
         # Subtitle strip
         if st.session_state["subtitles"]:
             with _lock:
-                _sent = list(_state["sentence"])
-            subtitle_text = " ".join(_sent) if _sent else ""
+                subtitle_text = " ".join(_state["sentence"])
             if subtitle_text:
                 st.markdown(
                     f'<div class="subtitle-strip">📝 {subtitle_text}</div>',
@@ -758,9 +752,6 @@ def page_history() -> None:
     gh: GestureHistory = st.session_state["history"]
 
     # Sync history object from _state when translator has been running
-    with _lock:
-        _sent = list(_state["sentence"])
-
     # Top action bar
     col_dl, col_clr, col_info = st.columns([2, 2, 4], gap="medium")
 
