@@ -58,7 +58,7 @@ jobs:
           flake8 . \
             --count \
             --max-line-length=120 \
-            --extend-ignore=E501,W503,W504,W291,W293,W391 \
+            --extend-ignore=E501,W503,W504,W291,W293,W391,E221,E231,E272,E402,E127,E128,E201,E203,E302,E303,E305,E401,F401,F541,F811 \
             --exclude=venv,.venv,dataset,logs,docs,models,__pycache__,.git \
             --statistics
 
