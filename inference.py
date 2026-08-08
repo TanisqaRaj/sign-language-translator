@@ -65,11 +65,21 @@ def load_tflite_model() -> tuple:
     """
     Load the TFLite interpreter and return (interpreter, input_idx, output_idx).
 
+    Supports both:
+      - tflite-runtime (lightweight, used in Docker/cloud via requirements_cloud.txt)
+      - Full TensorFlow (used in local development via requirements.txt)
+
     Raises
     ------
     FileNotFoundError : if the .tflite model file is missing.
     """
-    import tensorflow as tf
+    # Try lightweight tflite-runtime first (Docker/cloud), fall back to full TF
+    try:
+        import tflite_runtime.interpreter as tflite
+        Interpreter = tflite.Interpreter
+    except ImportError:
+        import tensorflow as tf
+        Interpreter = tf.lite.Interpreter
 
     if not os.path.exists(MODEL_TFLITE_PATH):
         raise FileNotFoundError(
@@ -77,7 +87,7 @@ def load_tflite_model() -> tuple:
             "Run convert_tflite.py first."
         )
 
-    interpreter = tf.lite.Interpreter(model_path=MODEL_TFLITE_PATH)
+    interpreter = Interpreter(model_path=MODEL_TFLITE_PATH)
     interpreter.allocate_tensors()
 
     input_idx  = interpreter.get_input_details()[0]["index"]

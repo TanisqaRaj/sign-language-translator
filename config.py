@@ -1,9 +1,10 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# config.py
-# Central configuration file for the Sign Language Translator project.
-# All constants, paths, and hyperparameters are defined here so you only
-# need to change one file when tweaking the project.
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# config.py  –  Central Configuration
+# Sign Language Translator – Enhanced Edition
+# =============================================================================
+# All constants, paths, and feature flags live here.
+# Nothing else needs to change when you tweak a setting.
+# =============================================================================
 
 import os
 
@@ -11,13 +12,12 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ── Dataset ───────────────────────────────────────────────────────────────────
-DATASET_DIR      = os.path.join(BASE_DIR, "dataset")      # Raw gesture images
-LANDMARKS_CSV    = os.path.join(BASE_DIR, "landmarks.csv") # Extracted landmark data
-IMAGES_PER_CLASS = 300          # Number of images to collect per gesture
-IMG_SIZE         = (224, 224)   # Resize target for CNN (if used)
+DATASET_DIR      = os.path.join(BASE_DIR, "dataset")
+LANDMARKS_CSV    = os.path.join(BASE_DIR, "landmarks.csv")
+IMAGES_PER_CLASS = 300
+IMG_SIZE         = (224, 224)
 
 # ── Gesture Classes ───────────────────────────────────────────────────────────
-# Add or remove gesture labels here — everything else auto-updates.
 GESTURE_LABELS = [
     "Hello",
     "Thank You",
@@ -30,28 +30,36 @@ GESTURE_LABELS = [
     "Help",
     "I Love You",
 ]
-
 NUM_CLASSES = len(GESTURE_LABELS)
 
+# Human-readable meanings for the AI Assistant panel
+GESTURE_MEANINGS = {
+    "Hello":     "A greeting gesture",
+    "Thank You": "Expressing gratitude",
+    "Yes":       "Affirmative response",
+    "No":        "Negative response",
+    "Please":    "Polite request",
+    "Sorry":     "Apology",
+    "Good":      "Positive acknowledgement",
+    "Bad":       "Negative acknowledgement",
+    "Help":      "Asking for assistance",
+    "I Love You":"Expressing love / ILY sign",
+}
+
 # ── MediaPipe ─────────────────────────────────────────────────────────────────
-MAX_NUM_HANDS        = 1        # Detect only one hand for speed
-MIN_DETECTION_CONF   = 0.7      # Minimum hand detection confidence
-MIN_TRACKING_CONF    = 0.5      # Minimum hand tracking confidence
-NUM_LANDMARKS        = 21       # MediaPipe Hands always returns 21 landmarks
-LANDMARK_FEATURES    = NUM_LANDMARKS * 2   # x, y per landmark = 42 features
+MAX_NUM_HANDS        = 1
+MIN_DETECTION_CONF   = 0.7
+MIN_TRACKING_CONF    = 0.5
+NUM_LANDMARKS        = 21
+LANDMARK_FEATURES    = NUM_LANDMARKS * 2   # 42
 
-# ── MoveNet (Body Pose) ───────────────────────────────────────────────────────
-# MoveNet Lightning: fast single-pose model, suitable for real-time on CPU.
-# TF-Hub URL — loaded once at startup, cached locally after first download.
+# ── MoveNet ───────────────────────────────────────────────────────────────────
 MOVENET_MODEL_URL  = "https://tfhub.dev/google/movenet/singlepose/lightning/4"
-MOVENET_INPUT_SIZE = 192      # MoveNet Lightning expects 192×192 RGB input
-MOVENET_THRESHOLD  = 0.2      # Keypoints below this confidence are zeroed out
-
-# MoveNet returns 17 keypoints; we keep (x, y) per keypoint = 34 pose features
+MOVENET_INPUT_SIZE = 192
+MOVENET_THRESHOLD  = 0.2
 NUM_POSE_KEYPOINTS = 17
-POSE_FEATURES      = NUM_POSE_KEYPOINTS * 2   # 34 features
+POSE_FEATURES      = NUM_POSE_KEYPOINTS * 2   # 34
 
-# Human-readable keypoint names (MoveNet ordering, 0-indexed)
 POSE_KEYPOINT_NAMES = [
     "nose",
     "left_eye",  "right_eye",
@@ -65,9 +73,7 @@ POSE_KEYPOINT_NAMES = [
 ]
 
 # ── Hybrid Feature Vector ─────────────────────────────────────────────────────
-# MediaPipe hand landmarks (42) + MoveNet body pose (34) = 76 total features.
-# All downstream scripts (preprocess, train, inference) use HYBRID_FEATURES.
-HYBRID_FEATURES    = LANDMARK_FEATURES + POSE_FEATURES   # 42 + 34 = 76
+HYBRID_FEATURES = LANDMARK_FEATURES + POSE_FEATURES   # 76
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 MODEL_DIR         = os.path.join(BASE_DIR, "models")
@@ -77,23 +83,76 @@ LABEL_MAP_PATH    = os.path.join(MODEL_DIR, "label_map.json")
 SCALER_PATH       = os.path.join(MODEL_DIR, "scaler.pkl")
 
 # ── Training Hyperparameters ──────────────────────────────────────────────────
-EPOCHS          = 100
-BATCH_SIZE      = 32
-LEARNING_RATE   = 0.001
-VALIDATION_SPLIT= 0.20          # 20% of data for validation
-TEST_SPLIT      = 0.10          # 10% of data for testing
-DROPOUT_RATE    = 0.4
-RANDOM_SEED     = 42
+EPOCHS           = 100
+BATCH_SIZE       = 32
+LEARNING_RATE    = 0.001
+VALIDATION_SPLIT = 0.20
+TEST_SPLIT       = 0.10
+DROPOUT_RATE     = 0.4
+RANDOM_SEED      = 42
 
 # ── Real-Time Inference ───────────────────────────────────────────────────────
-CONFIDENCE_THRESHOLD  = 0.75    # Minimum confidence to accept a prediction
-STABLE_FRAME_COUNT    = 15      # Frames a prediction must hold before TTS fires
-PREDICTION_BUFFER_LEN = 10      # Rolling buffer for smoothing predictions
-CAMERA_INDEX          = 0       # Webcam device index
+CONFIDENCE_THRESHOLD  = 0.75
+STABLE_FRAME_COUNT    = 15
+PREDICTION_BUFFER_LEN = 10
+CAMERA_INDEX          = 0
+
+# Confidence level below which "Did you mean?" suggestions appear
+LOW_CONFIDENCE_THRESHOLD = 0.70
 
 # ── TTS ───────────────────────────────────────────────────────────────────────
-TTS_RATE   = 150                # Speech rate (words per minute)
-TTS_VOLUME = 1.0                # Volume: 0.0 – 1.0
+TTS_RATE   = 150
+TTS_VOLUME = 1.0
+
+# ── Translation Languages ─────────────────────────────────────────────────────
+# Maps display name → ISO 639-1 code used by deep-translator
+SUPPORTED_LANGUAGES = {
+    "English":    "en",
+    "Hindi":      "hi",
+    "Spanish":    "es",
+    "French":     "fr",
+    "German":     "de",
+    "Japanese":   "ja",
+    "Korean":     "ko",
+    "Chinese":    "zh-CN",
+    "Arabic":     "ar",
+    "Tamil":      "ta",
+    "Telugu":     "te",
+    "Bengali":    "bn",
+    "Marathi":    "mr",
+}
+
+DEFAULT_LANGUAGE = "English"
+
+# ── UI / Theme ────────────────────────────────────────────────────────────────
+# Available themes: "dark" | "light"
+DEFAULT_THEME = "dark"
+
+# Font size modes: "normal" | "large"
+DEFAULT_FONT_SIZE = "normal"
+
+# High contrast mode
+DEFAULT_HIGH_CONTRAST = False
+
+# Auto-speak translated text when a gesture is confirmed
+AUTO_SPEAK_DEFAULT = True
+
+# Show live subtitle strip
+SUBTITLE_ENABLED_DEFAULT = True
+
+# ── Navigation Pages ─────────────────────────────────────────────────────────
+NAV_PAGES = [
+    "🏠 Home",
+    "📷 Live Translator",
+    "📜 History",
+    "📊 Analytics",
+    "⚙️ Settings",
+    "ℹ️ About",
+]
+
+# ── Analytics ────────────────────────────────────────────────────────────────
+# How many recent session data points to keep in memory
+ANALYTICS_MAX_HISTORY = 500
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_DIR  = os.path.join(BASE_DIR, "logs")

@@ -1,0 +1,173 @@
+# =============================================================================
+# .github/workflows/ci.yml
+# Continuous Integration – Sign Language Translator
+#
+# Triggers on every push and pull-request to main / master / develop.
+# Steps:
+#   1. Checkout code
+#   2. Set up Python 3.10
+#   3. Cache pip packages
+#   4. Install cloud dependencies (requirements_cloud.txt)
+#   5. Run linting with flake8
+#   6. Run unit tests with pytest
+#   7. Build Docker image
+#   8. Smoke-test the container (health-check endpoint)
+#   9. Push image to GHCR  (push events to main/master only)
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}   # e.g. your-username/sign-lang-translator
+
+jobs:
+  # ── 1. Lint & Test ──────────────────────────────────────────────────────────
+  test:
+    name: Lint & Test (Python 3.10)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements_cloud.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r requirements_cloud.txt flake8 pytest
+
+      - name: Lint with flake8
+        # E501 (line too long) is ignored – cosmetic only
+        # W503 / W504 are conflicting rules – suppress both
+        run: |
+          flake8 . \
+            --count \
+            --max-line-length=120 \
+            --extend-ignore=E501,W503,W504 \
+            --exclude=venv,.venv,dataset,logs,docs,models,__pycache__,.git \
+            --statistics
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -v --tb=short
+
+  # ── 2. Build & Push Docker image ────────────────────────────────────────────
+  docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: test                 # only runs if tests pass
+    permissions:
+      contents: read
+      packages: write           # required to push to GHCR
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Set up QEMU for multi-platform (useful if you ever want arm64)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Log in to GHCR only on push events (not on PRs – PRs can't have secrets)
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Generate smart image tags:
+      #   latest         → always on main/master
+      #   sha-<short>    → every push
+      #   branch-<name>  → on feature branches
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch,prefix=branch-
+            type=ref,event=pr,prefix=pr-
+
+      # Build image on PRs (validate only, don't push)
+      - name: Build Docker image (PR validation)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Build + push on pushes to main/master/develop
+      - name: Build and push Docker image
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Smoke test: run the just-built image and hit the health endpoint ───
+      - name: Smoke test – container health check
+        if: github.event_name == 'push'
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "Starting container: $IMAGE"
+          docker run -d \
+            --name smoke-test \
+            -p 8501:8501 \
+            -e STREAMLIT_SERVER_HEADLESS=true \
+            "$IMAGE"
+
+          # Wait up to 45 s for Streamlit to be ready
+          echo "Waiting for health endpoint…"
+          for i in $(seq 1 15); do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' smoke-test 2>/dev/null || echo "starting")
+            echo "  Attempt $i/15 → $STATUS"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Container is healthy!"
+              break
+            fi
+            sleep 3
+          done
+
+          # Also try the endpoint directly
+          curl --silent --fail --retry 5 --retry-delay 3 \
+            http://localhost:8501/_stcore/health || true
+
+          # Show logs and clean up
+          docker logs smoke-test
+          docker stop smoke-test
+          docker rm smoke-test
+
+      - name: Output image digest
+        if: github.event_name == 'push'
+        run: echo "Image pushed successfully"

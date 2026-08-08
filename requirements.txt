@@ -1,6 +1,6 @@
 # =============================================================================
 # requirements.txt
-# Pinned dependencies for the Real-Time Sign Language Translator project.
+# Pinned dependencies for the Real-Time Sign Language Translator – AI Edition.
 # Tested on Python 3.12 / Windows.
 #
 # Install:
@@ -16,12 +16,10 @@ mediapipe==0.10.21               # Google MediaPipe Hands (Python 3.12 compatibl
 # ── Deep Learning ─────────────────────────────────────────────────────────────
 tensorflow==2.16.1               # Model training + TFLite conversion (includes Keras 3)
 ai-edge-litert                   # TFLite interpreter for TF 2.20+ (replaces tf.lite.Interpreter)
-# Note: MoveNet Lightning TFLite model is auto-downloaded via urllib on first run
-# (no tensorflow-hub needed — avoids Python 3.12 pkg_resources incompatibility)
 
 # ── Data Science Utilities ────────────────────────────────────────────────────
 numpy==1.26.4                    # Numerical operations
-pandas==2.2.2                    # CSV handling for landmarks
+pandas==2.2.2                    # CSV handling for landmarks and history
 scikit-learn==1.4.2              # Train/val split, LabelEncoder, StandardScaler
 matplotlib==3.9.0                # Accuracy/loss graphs
 seaborn==0.13.2                  # Confusion matrix heatmap
@@ -31,6 +29,12 @@ streamlit==1.35.0                # Interactive browser UI
 
 # ── Text-to-Speech ────────────────────────────────────────────────────────────
 pyttsx3==2.90                    # Offline TTS engine (no internet required)
+
+# ── Multi-Language Translation ────────────────────────────────────────────────
+deep-translator==1.11.4          # GoogleTranslator wrapper for 13 languages
+
+# ── Interactive Charts (Analytics Dashboard) ─────────────────────────────────
+plotly==5.22.0                   # Bar charts, FPS line chart, donut charts
 
 # ── Utilities ────────────────────────────────────────────────────────────────
 Pillow==10.3.0                   # Image I/O helper

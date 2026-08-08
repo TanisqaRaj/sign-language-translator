@@ -1,0 +1,78 @@
+# =============================================================================
+# docker-compose.yml – Sign Language Translator
+#
+# This app is a self-contained ML inference service (no database, no cache).
+# A single "app" service is all that's required.
+#
+# Usage:
+#   docker compose up --build          # build + start
+#   docker compose up -d               # detached (background)
+#   docker compose logs -f app         # tail logs
+#   docker compose down                # stop and remove containers
+# =============================================================================
+
+services:
+
+  app:
+    # ── Build ────────────────────────────────────────────────────────────────
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # ── Image name (used when pulling from GHCR on the server) ───────────────
+    image: ghcr.io/${GITHUB_USERNAME:-your-username}/sign-lang-translator:${IMAGE_TAG:-latest}
+
+    # ── Container name ────────────────────────────────────────────────────────
+    container_name: sign-lang-translator
+
+    # ── Ports ─────────────────────────────────────────────────────────────────
+    ports:
+      - "${APP_PORT:-8501}:8501"
+
+    # ── Environment ───────────────────────────────────────────────────────────
+    # Values are read from .env (copy .env.example → .env, then fill in)
+    environment:
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_SERVER_FILE_WATCHER_TYPE=none
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+      - PYTHONUNBUFFERED=1
+      # Optional: set a custom app title, language defaults, etc.
+      - APP_TITLE=${APP_TITLE:-Sign Language Translator}
+      - DEFAULT_LANGUAGE=${DEFAULT_LANGUAGE:-English}
+
+    # ── Load .env file ────────────────────────────────────────────────────────
+    env_file:
+      - path: .env
+        required: false      # won't fail if .env doesn't exist
+
+    # ── Health check ─────────────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+    # ── Restart policy ────────────────────────────────────────────────────────
+    restart: unless-stopped
+
+    # ── Persistent logs volume ────────────────────────────────────────────────
+    volumes:
+      - app_logs:/app/logs
+
+    # ── Networking ────────────────────────────────────────────────────────────
+    networks:
+      - translator_net
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  app_logs:
+    driver: local
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  translator_net:
+    driver: bridge

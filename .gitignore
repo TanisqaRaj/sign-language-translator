@@ -18,8 +18,10 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Environment variables
+# Environment variables (never commit real secrets)
 .env
+.env.local
+.env.production
 
 # Jupyter
 .ipynb_checkpoints/

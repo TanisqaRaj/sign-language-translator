@@ -1,16 +1,78 @@
+# =============================================================================
+# .dockerignore – Sign Language Translator
+# Excludes everything that should NOT be copied into the Docker image.
+# The gesture_model.tflite, movenet_lightning_fp16.tflite, and label_map.json
+# are intentionally NOT excluded – the app needs them at runtime.
+# =============================================================================
+
+# ── Virtual environments ──────────────────────────────────────────────────────
 venv/
-.env/
+.venv/
 env/
+.env/
+
+# ── Python cache ──────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+*.pycache
+.pytest_cache/
+
+# ── Dataset (large image folders, not needed in production image) ─────────────
 dataset/
-models/*.keras
-models/*.h5
+dataset.txt
 landmarks.csv
 landmarks.npy
+sample_check.jpg
+
+# ── Trained Keras / H5 model files (tflite is already converted) ──────────────
+models/*.keras
+models/*.h5
+models/scaler.pkl
+
+# NOTE: models/gesture_model.tflite, models/movenet_lightning_fp16.tflite,
+#       and models/label_map.json ARE included (required by app_cloud.py)
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
 logs/
+*.log
+
+# ── Documentation images / reports (not needed at runtime) ───────────────────
+docs/*.png
+docs/project_report.md
+brain.md
+
+# ── Test files ────────────────────────────────────────────────────────────────
+tests/
+
+# ── Git ───────────────────────────────────────────────────────────────────────
 .git/
+.gitignore
+
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
 .idea/
 .vscode/
-docs/*.png
-tests/
+*.swp
+*.swo
+*~
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Environment variables (secrets must never go into the image) ──────────────
+.env
+.env.*
+!.env.example
+
+# ── Node (package-lock.json has no runtime purpose here) ─────────────────────
+node_modules/
+package-lock.json
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── CI / build artifacts ──────────────────────────────────────────────────────
+.github/
