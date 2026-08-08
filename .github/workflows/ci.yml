@@ -25,7 +25,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # e.g. your-username/sign-lang-translator
+  IMAGE_NAME: ${{ github.repository }}   # lowercased in jobs that need it
 
 jobs:
   # ── 1. Lint & Test ──────────────────────────────────────────────────────────
@@ -98,11 +98,15 @@ jobs:
       #   latest         → always on main/master
       #   sha-<short>    → every push
       #   branch-<name>  → on feature branches
+      - name: Set lowercase image name
+        id: image_name
+        run: echo "value=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.value }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
             type=sha,prefix=sha-,format=short
@@ -137,7 +141,7 @@ jobs:
       - name: Smoke test – container health check
         if: github.event_name == 'push'
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          IMAGE="${{ env.REGISTRY }}/$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]'):latest"
           echo "Starting container: $IMAGE"
           docker run -d \
             --name smoke-test \

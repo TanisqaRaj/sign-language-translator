@@ -54,10 +54,11 @@ jobs:
       - name: Determine image tag
         id: image
         run: |
+          REPO=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
           SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
           echo "tag=sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "full=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "latest=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+          echo "full=${{ env.REGISTRY }}/${REPO}:sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "latest=${{ env.REGISTRY }}/${REPO}:latest" >> $GITHUB_OUTPUT
 
       # ── SSH into the server and perform a rolling deploy ───────────────────
       - name: Deploy to server via SSH
