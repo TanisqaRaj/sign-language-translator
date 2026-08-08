@@ -1,149 +1,40 @@
 # =============================================================================
 # .github/workflows/cd.yml
-# Continuous Deployment – Sign Language Translator
+# Continuous Deployment – Sign Language Translator → Render
 #
-# Deployment strategy: SSH into a VPS, pull the latest image from GHCR,
-# stop the old container, start the new one, verify health.
+# Triggers automatically after CI passes on main/master.
+# Calls Render's deploy hook URL to trigger a re-deploy of the web service.
 #
-# This workflow only runs after the CI workflow passes on main/master.
-# It will NOT deploy if tests fail or the Docker build fails.
-#
-# ── Required GitHub Repository Secrets ──────────────────────────────────────
-# Go to: Settings → Secrets and variables → Actions → New repository secret
-#
-#   DEPLOY_HOST        IP address or hostname of your server (e.g. 1.2.3.4)
-#   DEPLOY_USERNAME    SSH user on the server (e.g. ubuntu or root)
-#   DEPLOY_SSH_KEY     Private SSH key (paste the full contents of ~/.ssh/id_rsa)
-#   DEPLOY_PORT        SSH port (usually 22)  ← optional, defaults to 22
-#
-# ── Server prerequisites ─────────────────────────────────────────────────────
-#   • Docker installed and running on the server
-#   • The SSH user must be in the 'docker' group:
-#       sudo usermod -aG docker $USER
-#   • Port 8501 open in the server firewall / security group
+# ── Required GitHub Repository Secret ───────────────────────────────────────
+#   RENDER_DEPLOY_HOOK_URL   → copied from Render dashboard (see README)
 # =============================================================================
 
 name: CD
 
 on:
-  # Trigger only after CI passes on main/master
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: [main, master]
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-  CONTAINER_NAME: sign-lang-translator
-  APP_PORT: 8501
-
 jobs:
   deploy:
-    name: Deploy to VPS
+    name: Deploy to Render
     runs-on: ubuntu-latest
-
-    # Only deploy if the triggering CI workflow succeeded
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # ── Build the full image tag that was pushed by CI ─────────────────────
-      - name: Determine image tag
-        id: image
+      - name: Trigger Render deploy hook
         run: |
-          REPO=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
-          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
-          echo "tag=sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "full=${{ env.REGISTRY }}/${REPO}:sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "latest=${{ env.REGISTRY }}/${REPO}:latest" >> $GITHUB_OUTPUT
+          curl --silent --show-error --fail \
+            "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
 
-      # ── SSH into the server and perform a rolling deploy ───────────────────
-      - name: Deploy to server via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USERNAME }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          # Pass image info as environment variables
-          envs: REGISTRY,IMAGE_NAME,CONTAINER_NAME,APP_PORT
-          script: |
-            set -e   # exit immediately on error
-
-            FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:latest"
-            echo "=== Deploying image: ${FULL_IMAGE} ==="
-
-            # ── 1. Log in to GHCR using a PAT stored on the server ──────────
-            # On your server, run once:
-            #   echo YOUR_PAT | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-            # This stores credentials in ~/.docker/config.json
-            # Alternatively, set GHCR_PAT as an env var:
-            # echo "$GHCR_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-
-            # ── 2. Pull the latest image ─────────────────────────────────────
-            echo "--- Pulling latest image ---"
-            docker pull "${FULL_IMAGE}"
-
-            # ── 3. Stop and remove the old container (if running) ────────────
-            echo "--- Stopping old container ---"
-            docker stop "${CONTAINER_NAME}" 2>/dev/null || true
-            docker rm   "${CONTAINER_NAME}" 2>/dev/null || true
-
-            # ── 4. Start the new container ───────────────────────────────────
-            echo "--- Starting new container ---"
-            docker run -d \
-              --name "${CONTAINER_NAME}" \
-              --restart unless-stopped \
-              -p "${APP_PORT}:8501" \
-              -e STREAMLIT_SERVER_HEADLESS=true \
-              -e STREAMLIT_SERVER_FILE_WATCHER_TYPE=none \
-              -e STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
-              -e PYTHONUNBUFFERED=1 \
-              -v app_logs:/app/logs \
-              "${FULL_IMAGE}"
-
-            # ── 5. Wait for health check to pass ─────────────────────────────
-            echo "--- Waiting for health check ---"
-            for i in $(seq 1 20); do
-              STATUS=$(docker inspect --format='{{.State.Health.Status}}' "${CONTAINER_NAME}" 2>/dev/null || echo "starting")
-              echo "  Health check $i/20 → ${STATUS}"
-              if [ "${STATUS}" = "healthy" ]; then
-                echo "=== Deployment successful! Container is healthy. ==="
-                break
-              fi
-              if [ "$i" = "20" ]; then
-                echo "ERROR: Container did not become healthy in time."
-                docker logs "${CONTAINER_NAME}"
-                exit 1
-              fi
-              sleep 5
-            done
-
-            # ── 6. Clean up old images (keep last 3) ─────────────────────────
-            echo "--- Cleaning up old images ---"
-            docker image prune -f --filter "until=24h" || true
-
-            echo "=== Deploy complete. Running container: ==="
-            docker ps --filter "name=${CONTAINER_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-
-      # ── Notify success ──────────────────────────────────────────────────────
       - name: Deployment summary
         if: success()
         run: |
-          echo "### ✅ Deployment Succeeded" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| | |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Image** | \`${{ steps.image.outputs.full }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Server** | \`${{ secrets.DEPLOY_HOST }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Port** | \`${{ env.APP_PORT }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Render deploy triggered successfully" >> $GITHUB_STEP_SUMMARY
 
-      # ── Notify failure ──────────────────────────────────────────────────────
       - name: Deployment failed
         if: failure()
         run: |
-          echo "### ❌ Deployment Failed" >> $GITHUB_STEP_SUMMARY
-          echo "Check the logs above for details." >> $GITHUB_STEP_SUMMARY
+          echo "### ❌ Render deploy hook failed" >> $GITHUB_STEP_SUMMARY
