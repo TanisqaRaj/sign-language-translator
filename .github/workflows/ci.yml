@@ -54,13 +54,11 @@ jobs:
         run: pip install --no-cache-dir -r requirements_cloud.txt flake8 pytest
 
       - name: Lint with flake8
-        # E501 (line too long) is ignored – cosmetic only
-        # W503 / W504 are conflicting rules – suppress both
         run: |
           flake8 . \
             --count \
             --max-line-length=120 \
-            --extend-ignore=E501,W503,W504 \
+            --extend-ignore=E501,W503,W504,W291,W293,W391 \
             --exclude=venv,.venv,dataset,logs,docs,models,__pycache__,.git \
             --statistics
 

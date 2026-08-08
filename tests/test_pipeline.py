@@ -188,27 +188,23 @@ class TestTTSEngine(unittest.TestCase):
     """Test TTSEngine duplicate-prevention and cooldown logic using mocks."""
 
     def _make_engine(self):
-        """Create a TTSEngine with a mocked pyttsx3 backend."""
-        with patch("utils.tts_engine.pyttsx3") as mock_pyttsx3:
-            mock_engine_instance = MagicMock()
-            mock_pyttsx3.init.return_value = mock_engine_instance
-
+        """Create a TTSEngine with subprocess mocked out."""
+        with patch("utils.tts_engine.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="Voice1\n", returncode=0)
             from importlib import reload
             import utils.tts_engine as tts_module
             reload(tts_module)
             engine = tts_module.TTSEngine()
-            engine._engine = mock_engine_instance
             engine._available = True
         return engine
 
     def test_duplicate_skipped(self):
         """The same word must not be spoken twice in quick succession."""
         engine = self._make_engine()
-        engine.speak("Hello")
-        import time
-        time.sleep(0.05)
+        engine._last_spoken = "Hello"
+        engine._last_spoken_at = __import__("time").monotonic()
         with patch.object(engine, "_run") as mock_run:
-            engine.speak("Hello")          # Should be skipped
+            engine.speak("Hello")
             mock_run.assert_not_called()
 
     def test_force_bypasses_duplicate_check(self):
