@@ -410,9 +410,13 @@ def plot_accuracy(history, save_path: str) -> None:
     ax.plot(epochs_range, history.history["accuracy"],     label="Train Accuracy",      linewidth=2)
     ax.plot(epochs_range, history.history["val_accuracy"], label="Validation Accuracy", linewidth=2, linestyle="--")
     ax.set_title("Character Model Accuracy", fontsize=14, fontweight="bold")
-    ax.set_xlabel("Epoch");  ax.set_ylabel("Accuracy")
-    ax.legend(loc="lower right");  ax.grid(alpha=0.3)
-    fig.tight_layout();  fig.savefig(save_path, dpi=150);  plt.close(fig)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Accuracy")
+    ax.legend(loc="lower right")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
     logger.info("Character accuracy plot saved: %s", save_path)
 
 
@@ -423,9 +427,13 @@ def plot_loss(history, save_path: str) -> None:
     ax.plot(epochs_range, history.history["loss"],     label="Train Loss",      linewidth=2)
     ax.plot(epochs_range, history.history["val_loss"], label="Validation Loss", linewidth=2, linestyle="--")
     ax.set_title("Character Model Loss", fontsize=14, fontweight="bold")
-    ax.set_xlabel("Epoch");  ax.set_ylabel("Loss")
-    ax.legend(loc="upper right");  ax.grid(alpha=0.3)
-    fig.tight_layout();  fig.savefig(save_path, dpi=150);  plt.close(fig)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.legend(loc="upper right")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
     logger.info("Character loss plot saved: %s", save_path)
 
 
@@ -442,7 +450,9 @@ def plot_confusion_matrix(y_test, y_pred, label_map: dict, save_path: str) -> No
     disp.plot(ax=ax, cmap="Blues", colorbar=True, xticks_rotation=45, values_format=".2f")
     ax.set_title("Character Model — Normalised Confusion Matrix",
                  fontsize=14, fontweight="bold")
-    fig.tight_layout();  fig.savefig(save_path, dpi=150);  plt.close(fig)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
     logger.info("Character confusion matrix saved: %s", save_path)
 
 

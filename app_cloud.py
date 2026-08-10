@@ -823,9 +823,8 @@ def page_live_translator() -> None:
             _c  = _state["confidence"]
             _sf = _state["stable_count"]
             if _mode_now == "Character":
-                _words        = list(_state["char_sentence"])
-                _stab_cfg     = st.session_state.get("char_stable_frames_cfg", CHARACTER_STABLE_FRAME_COUNT)
-                _debounce_cnt = _state["char_debounce_count"]
+                _words    = list(_state["char_sentence"])
+                _stab_cfg = st.session_state.get("char_stable_frames_cfg", CHARACTER_STABLE_FRAME_COUNT)
             else:
                 _words    = list(_state["sentence"])
                 _stab_cfg = st.session_state.get("stable_frames_cfg", STABLE_FRAME_COUNT)
