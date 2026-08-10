@@ -42,6 +42,12 @@ from config import (
     DEFAULT_HIGH_CONTRAST,
     AUTO_SPEAK_DEFAULT,
     SUBTITLE_ENABLED_DEFAULT,
+    # ── Character model config ────────────────────────────────────────────────
+    CHARACTER_CONFIDENCE_THRESHOLD,
+    CHARACTER_STABLE_FRAME_COUNT,
+    CHARACTER_DEBOUNCE_FRAMES,
+    WORD_CONFIDENCE_THRESHOLD,
+    CHARACTER_LABELS,
 )
 from utils.mediapipe_helper import HandDetector
 from utils.analytics import SessionAnalytics
@@ -51,6 +57,9 @@ from preprocess import normalise_landmarks
 from inference import (
     load_tflite_model, load_label_map, load_scaler,
     predict, PredictionSmoother,
+    # ── Character model (Model 2) ─────────────────────────────────────────────
+    load_character_tflite_model, load_character_label_map, load_character_scaler,
+    predict_character,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,7 +100,10 @@ _DEFAULTS: dict = {
     "stable_frames":     0,
     # Model
     "model_loaded":      False,
+    "char_model_loaded": False,
     "error_msg":         "",
+    # Recognition mode: "Word" or "Character"
+    "recognition_mode":  "Word",
     # Settings
     "theme":             DEFAULT_THEME,
     "font_size":         DEFAULT_FONT_SIZE,
@@ -101,6 +113,9 @@ _DEFAULTS: dict = {
     "language":          DEFAULT_LANGUAGE,
     "conf_threshold":    CONFIDENCE_THRESHOLD,
     "stable_frames_cfg": STABLE_FRAME_COUNT,
+    # Character mode settings
+    "char_conf_threshold":    CHARACTER_CONFIDENCE_THRESHOLD,
+    "char_stable_frames_cfg": CHARACTER_STABLE_FRAME_COUNT,
     # Objects (created below after cache)
     "analytics":         None,
     "history":           None,
@@ -128,8 +143,9 @@ inject_css(
 # ─────────────────────────────────────────────────────────────────────────────
 # Model loading  (cached once per server process)
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner="⏳ Loading model…")
+@st.cache_resource(show_spinner="⏳ Loading word model…")
 def get_resources():
+    """Load word model (Model 1) — cached once. Never loads character model."""
     try:
         interp, in_idx, out_idx = load_tflite_model()
         label_map = load_label_map()
@@ -139,13 +155,45 @@ def get_resources():
     except FileNotFoundError as exc:
         return None, None, None, None, None, None, str(exc)
 
+
+@st.cache_resource(show_spinner="⏳ Loading character model…")
+def get_char_resources():
+    """
+    Load character model (Model 2) — cached once, completely independent.
+
+    Returns
+    -------
+    (interp, in_idx, out_idx, label_map, scaler, error_msg)
+    The HandDetector is shared from get_resources() — MediaPipe is the same.
+    """
+    try:
+        interp, in_idx, out_idx = load_character_tflite_model()
+        label_map = load_character_label_map()
+        scaler    = load_character_scaler()
+        return interp, in_idx, out_idx, label_map, scaler, None
+    except FileNotFoundError as exc:
+        return None, None, None, None, None, str(exc)
+    except ValueError as exc:
+        return None, None, None, None, None, str(exc)
+
+
+# ── Word model ─────────────────────────────────────────────────────────────────
 interp, in_idx, out_idx, label_map, scaler, detector, _load_err = get_resources()
 if interp is not None:
     st.session_state["model_loaded"] = True
 if _load_err and not st.session_state["error_msg"]:
     st.session_state["error_msg"] = _load_err
 
+# ── Character model ────────────────────────────────────────────────────────────
+(
+    char_interp, char_in_idx, char_out_idx,
+    char_label_map, char_scaler, _char_load_err,
+) = get_char_resources()
+if char_interp is not None:
+    st.session_state["char_model_loaded"] = True
+
 smoother = PredictionSmoother()
+char_smoother = PredictionSmoother()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared mutable state for the WebRTC background thread
@@ -153,108 +201,215 @@ smoother = PredictionSmoother()
 # ─────────────────────────────────────────────────────────────────────────────
 _lock  = threading.Lock()
 _state: dict = {
-    "gesture":      "—",
-    "confidence":   0.0,
-    "stable_count": 0,
-    "last_stable":  None,
-    "sentence":     [],
-    "fps":          0.0,
-    "frame_count":  0,
-    "t_last":       time.time(),
+    # ── Shared ────────────────────────────────────────────────────────────────
+    "gesture":        "—",
+    "confidence":     0.0,
+    "stable_count":   0,
+    "last_stable":    None,
+    "fps":            0.0,
+    "frame_count":    0,
+    "t_last":         time.time(),
+    # ── Word mode sentence ─────────────────────────────────────────────────────
+    "sentence":       [],
+    # ── Character mode state ───────────────────────────────────────────────────
+    # "char_sentence" is the accumulated character list (e.g. ["H","E","L","L","O"])
+    "char_sentence":        [],
+    # Debounce: number of frames since last accepted character
+    "char_debounce_count":  0,
+    # The last character that was accepted into char_sentence
+    "char_last_accepted":   None,
+    # Recognition mode — mirrors session_state but safe for background thread
+    "mode":                 "Word",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WebRTC frame callback  (background thread, ~30×/sec)
 # ─────────────────────────────────────────────────────────────────────────────
 def video_frame_callback(frame: av.VideoFrame) -> av.VideoFrame:
-    if interp is None:
-        return frame
-
     img = frame.to_ndarray(format="bgr24")
     img = cv2.flip(img, 1)
 
+    # Read current mode safely (written by main thread before streamer starts)
+    with _lock:
+        current_mode = _state["mode"]
+
+    # ── Common: MediaPipe hand extraction ─────────────────────────────────────
+    if detector is None:
+        return frame
+
     raw_lm, annotated = detector.find_landmarks(img, draw=True)
+    norm_lm = normalise_landmarks(raw_lm) if raw_lm is not None else None
 
     gesture    = None
     confidence = 0.0
-    _conf_thr  = st.session_state.get("conf_threshold", CONFIDENCE_THRESHOLD)
-    _stab_thr  = st.session_state.get("stable_frames_cfg", STABLE_FRAME_COUNT)
 
-    if raw_lm is not None:
-        norm_lm        = normalise_landmarks(raw_lm)
-        raw_pred, conf = predict(norm_lm, interp, in_idx, out_idx, label_map, scaler)
-        if conf >= _conf_thr:
-            gesture, confidence = smoother.update(raw_pred, conf)
+    # ── Word mode ─────────────────────────────────────────────────────────────
+    if current_mode == "Word":
+        if interp is None:
+            return frame
+
+        _conf_thr = st.session_state.get("conf_threshold", CONFIDENCE_THRESHOLD)
+        _stab_thr = st.session_state.get("stable_frames_cfg", STABLE_FRAME_COUNT)
+
+        if norm_lm is not None:
+            raw_pred, conf = predict(norm_lm, interp, in_idx, out_idx, label_map, scaler)
+            if conf >= _conf_thr:
+                gesture, confidence = smoother.update(raw_pred, conf)
+            else:
+                smoother.reset()
         else:
             smoother.reset()
-    else:
-        smoother.reset()
 
-    with _lock:
-        # FPS calculation
-        now = time.time()
-        dt  = now - _state["t_last"]
-        _state["t_last"] = now
-        fps = 1.0 / dt if dt > 0 else 0.0
-        _state["fps"] = round(fps * 0.1 + _state["fps"] * 0.9, 1)  # EMA
+        with _lock:
+            _update_fps()
+            if gesture:
+                if gesture == _state["last_stable"]:
+                    _state["stable_count"] += 1
+                else:
+                    _state["stable_count"] = 1
+                    _state["last_stable"]  = gesture
 
-        # Stability + sentence building
-        if gesture:
-            if gesture == _state["last_stable"]:
-                _state["stable_count"] += 1
+                if _state["stable_count"] == _stab_thr:
+                    words = _state["sentence"]
+                    if not words or words[-1] != gesture:
+                        _state["sentence"].append(gesture)
             else:
-                _state["stable_count"] = 1
-                _state["last_stable"]  = gesture
+                _state["stable_count"] = 0
+                _state["last_stable"]  = None
 
-            if _state["stable_count"] == _stab_thr:
-                words = _state["sentence"]
-                if not words or words[-1] != gesture:
-                    _state["sentence"].append(gesture)
+            _state["gesture"]    = gesture or "—"
+            _state["confidence"] = confidence
+            _state["frame_count"] += 1
+
+        _draw_overlay(annotated, gesture, confidence, _state["stable_count"],
+                      _stab_thr, _state["sentence"], mode="Word")
+
+    # ── Character mode ────────────────────────────────────────────────────────
+    else:
+        if char_interp is None:
+            return frame
+
+        _conf_thr = st.session_state.get("char_conf_threshold", CHARACTER_CONFIDENCE_THRESHOLD)
+        _stab_thr = st.session_state.get("char_stable_frames_cfg", CHARACTER_STABLE_FRAME_COUNT)
+
+        if norm_lm is not None:
+            raw_pred, conf = predict_character(
+                norm_lm, char_interp, char_in_idx, char_out_idx,
+                char_label_map, char_scaler,
+            )
+            if conf >= _conf_thr:
+                gesture, confidence = char_smoother.update(raw_pred, conf)
+            else:
+                char_smoother.reset()
         else:
-            _state["stable_count"] = 0
-            _state["last_stable"]  = None
+            char_smoother.reset()
 
-        _state["gesture"]      = gesture or "—"
-        _state["confidence"]   = confidence
-        _state["frame_count"] += 1
+        with _lock:
+            _update_fps()
+            _state["frame_count"] += 1
 
-    # ── Overlay ────────────────────────────────────────────────────────────────
-    h, w = annotated.shape[:2]
+            if gesture:
+                if gesture == _state["last_stable"]:
+                    _state["stable_count"] += 1
+                else:
+                    _state["stable_count"] = 1
+                    _state["last_stable"]  = gesture
 
-    # Top banner background
-    ov = annotated.copy()
+                # Stability reached — check debounce before accepting
+                if _state["stable_count"] >= _stab_thr:
+                    if _state["char_debounce_count"] >= CHARACTER_DEBOUNCE_FRAMES:
+                        # Accept character only if it changed since last acceptance
+                        last_acc = _state["char_last_accepted"]
+                        if last_acc != gesture:
+                            _state["char_sentence"].append(gesture)
+                            _state["char_last_accepted"] = gesture
+                        # Reset debounce so user must clear hand to type again
+                        _state["char_debounce_count"] = 0
+                    else:
+                        _state["char_debounce_count"] += 1
+                else:
+                    _state["char_debounce_count"] += 1
+            else:
+                _state["stable_count"] = 0
+                _state["last_stable"]  = None
+                # Accumulate debounce while hand is absent / prediction is low
+                _state["char_debounce_count"] = min(
+                    _state["char_debounce_count"] + 1,
+                    CHARACTER_DEBOUNCE_FRAMES + 5,
+                )
+
+            _state["gesture"]    = gesture or "—"
+            _state["confidence"] = confidence
+
+        with _lock:
+            _char_sent = list(_state["char_sentence"])
+
+        _draw_overlay(annotated, gesture, confidence, _state["stable_count"],
+                      _stab_thr, _char_sent, mode="Character")
+
+    return av.VideoFrame.from_ndarray(annotated, format="bgr24")
+
+
+def _update_fps() -> None:
+    """Update EMA FPS in _state. Must be called inside _lock."""
+    now = time.time()
+    dt  = now - _state["t_last"]
+    _state["t_last"] = now
+    fps = 1.0 / dt if dt > 0 else 0.0
+    _state["fps"] = round(fps * 0.1 + _state["fps"] * 0.9, 1)
+
+
+def _draw_overlay(
+    frame: np.ndarray,
+    gesture: str | None,
+    confidence: float,
+    stable_count: int,
+    stab_thr: int,
+    sentence: list[str],
+    mode: str,
+) -> None:
+    """Draw the HUD overlay onto the frame in-place."""
+    h, w = frame.shape[:2]
+
+    # Top banner
+    ov = frame.copy()
     cv2.rectangle(ov, (0, 0), (w, 82), (0, 0, 0), -1)
-    cv2.addWeighted(ov, 0.55, annotated, 0.45, 0, annotated)
+    cv2.addWeighted(ov, 0.55, frame, 0.45, 0, frame)
+
+    # Mode badge
+    mode_color = (255, 140, 0) if mode == "Character" else (100, 180, 255)
+    cv2.putText(frame, f"[{mode}]", (w - 120, 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, mode_color, 1)
 
     color = (0, 220, 0) if gesture else (80, 80, 220)
     label = gesture if gesture else "No gesture"
-    cv2.putText(annotated, label, (12, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.95, color, 2)
+    cv2.putText(frame, label, (12, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.95, color, 2)
     if gesture:
-        cv2.putText(annotated, f"{confidence:.0%} confidence", (12, 58),
+        cv2.putText(frame, f"{confidence:.0%} confidence", (12, 58),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
     # Stability bar
-    with _lock:
-        _sc = _state["stable_count"]
-    stable_pct = min(_sc / max(_stab_thr, 1), 1.0)
+    stable_pct = min(stable_count / max(stab_thr, 1), 1.0)
     bar_w = w - 24
-    cv2.rectangle(annotated, (12, 66), (12 + bar_w, 76), (40, 40, 40), -1)
+    cv2.rectangle(frame, (12, 66), (12 + bar_w, 76), (40, 40, 40), -1)
     fill_w = int(bar_w * stable_pct)
     if fill_w > 0:
         bar_col = (0, int(200 * stable_pct), int(200 * (1 - stable_pct)))
-        cv2.rectangle(annotated, (12, 66), (12 + fill_w, 76), bar_col, -1)
+        cv2.rectangle(frame, (12, 66), (12 + fill_w, 76), bar_col, -1)
 
     # Bottom sentence strip
-    ov2 = annotated.copy()
+    ov2 = frame.copy()
     cv2.rectangle(ov2, (0, h - 44), (w, h), (0, 0, 0), -1)
-    cv2.addWeighted(ov2, 0.55, annotated, 0.45, 0, annotated)
-    with _lock:
-        _sent = list(_state["sentence"])
-    sentence_txt = " ".join(_sent) if _sent else "—"
-    cv2.putText(annotated, f"Sentence: {sentence_txt}", (10, h - 16),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.58, (210, 210, 210), 1)
+    cv2.addWeighted(ov2, 0.55, frame, 0.45, 0, frame)
 
-    return av.VideoFrame.from_ndarray(annotated, format="bgr24")
+    if mode == "Character":
+        sentence_txt = "".join(sentence) if sentence else "—"
+        cv2.putText(frame, f"Text: {sentence_txt}", (10, h - 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.58, (210, 210, 210), 1)
+    else:
+        sentence_txt = " ".join(sentence) if sentence else "—"
+        cv2.putText(frame, f"Sentence: {sentence_txt}", (10, h - 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.58, (210, 210, 210), 1)
 
 
 
@@ -281,10 +436,20 @@ def render_sidebar() -> None:
 
         # Model status
         if st.session_state["model_loaded"]:
-            st.markdown('<span class="badge badge-green">✅ Model Ready</span>',
+            st.markdown('<span class="badge badge-green">✅ Word Model Ready</span>',
                         unsafe_allow_html=True)
         elif st.session_state["error_msg"]:
-            st.markdown('<span class="badge badge-red">❌ Model Missing</span>',
+            st.markdown('<span class="badge badge-red">❌ Word Model Missing</span>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown('<span class="badge badge-yellow">⏳ Loading…</span>',
+                        unsafe_allow_html=True)
+
+        if st.session_state["char_model_loaded"]:
+            st.markdown('<span class="badge badge-green">✅ Char Model Ready</span>',
+                        unsafe_allow_html=True)
+        elif _char_load_err:
+            st.markdown('<span class="badge badge-yellow">⚠️ Char Model Not Trained</span>',
                         unsafe_allow_html=True)
         else:
             st.markdown('<span class="badge badge-yellow">⏳ Loading…</span>',
@@ -328,10 +493,16 @@ def render_sidebar() -> None:
 
         st.markdown('<hr style="border-color:rgba(99,102,241,0.15);">', unsafe_allow_html=True)
 
-        # Supported gestures
-        st.markdown('<div class="clay-section-title">🤙 Gestures</div>',
-                    unsafe_allow_html=True)
-        chips = "".join(f'<span class="gesture-chip">{g}</span>' for g in GESTURE_LABELS)
+        # Supported gestures / characters
+        _mode_sidebar = st.session_state.get("recognition_mode", "Word")
+        if _mode_sidebar == "Word":
+            st.markdown('<div class="clay-section-title">🤙 Gestures</div>',
+                        unsafe_allow_html=True)
+            chips = "".join(f'<span class="gesture-chip">{g}</span>' for g in GESTURE_LABELS)
+        else:
+            st.markdown('<div class="clay-section-title">🔤 Characters</div>',
+                        unsafe_allow_html=True)
+            chips = "".join(f'<span class="gesture-chip">{c}</span>' for c in CHARACTER_LABELS)
         st.markdown(f'<div style="line-height:2.3;">{chips}</div>',
                     unsafe_allow_html=True)
 
@@ -520,6 +691,73 @@ def page_live_translator() -> None:
     <hr style="border-color:rgba(99,102,241,0.15);">
     """, unsafe_allow_html=True)
 
+    # ── Recognition Mode Selector ─────────────────────────────────────────────
+    st.markdown('<div class="clay-section-title">🔄 Recognition Mode</div>',
+                unsafe_allow_html=True)
+    mode_col1, mode_col2, mode_col3 = st.columns([2, 2, 4], gap="small")
+    with mode_col1:
+        if st.button(
+            "🤙 Word Recognition",
+            use_container_width=True,
+            key="btn_mode_word",
+            type="primary" if st.session_state["recognition_mode"] == "Word" else "secondary",
+        ):
+            st.session_state["recognition_mode"] = "Word"
+            with _lock:
+                _state["mode"] = "Word"
+                _state["stable_count"] = 0
+                _state["last_stable"] = None
+            smoother.reset()
+            st.rerun()
+    with mode_col2:
+        char_avail = char_interp is not None
+        if st.button(
+            "🔤 Alphabet / Character",
+            use_container_width=True,
+            key="btn_mode_char",
+            type="primary" if st.session_state["recognition_mode"] == "Character" else "secondary",
+            disabled=not char_avail,
+        ):
+            st.session_state["recognition_mode"] = "Character"
+            with _lock:
+                _state["mode"] = "Character"
+                _state["stable_count"] = 0
+                _state["last_stable"] = None
+            char_smoother.reset()
+            st.rerun()
+    with mode_col3:
+        current_mode = st.session_state["recognition_mode"]
+        if current_mode == "Word":
+            st.markdown(
+                '<div style="padding:8px 12px;border-radius:12px;'
+                'background:linear-gradient(135deg,rgba(99,102,241,0.15),rgba(99,102,241,0.05));'
+                'color:#c7d2fe;font-size:0.85rem;font-weight:600;">'
+                '🤙 <b>Word mode</b> — recognises: Hello · Thank You · Yes · No · Please · Sorry</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            if char_avail:
+                st.markdown(
+                    '<div style="padding:8px 12px;border-radius:12px;'
+                    'background:linear-gradient(135deg,rgba(251,191,36,0.15),rgba(251,191,36,0.05));'
+                    'color:#fde68a;font-size:0.85rem;font-weight:600;">'
+                    '🔤 <b>Character mode</b> — recognises: A–Z and 0–9</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    '<div style="padding:8px 12px;border-radius:12px;'
+                    'background:rgba(239,68,68,0.1);color:#fca5a5;font-size:0.85rem;">'
+                    '⚠️ Character model not trained yet — run <code>preprocess_characters.py</code> '
+                    '→ <code>train_character_model.py</code> → <code>convert_character_tflite.py</code></div>',
+                    unsafe_allow_html=True,
+                )
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    # Sync mode into _state every render so the callback always reads the right value
+    with _lock:
+        _state["mode"] = st.session_state["recognition_mode"]
+
     col_video, col_info = st.columns([3, 2], gap="large")
 
     # ── Left: Camera ──────────────────────────────────────────────────────────
@@ -527,7 +765,8 @@ def page_live_translator() -> None:
         st.markdown('<div class="clay-section-title">📹 Camera Feed</div>',
                     unsafe_allow_html=True)
 
-        if interp is not None:
+        model_ready = (interp is not None) or (char_interp is not None)
+        if model_ready:
             st.markdown('<div class="camera-wrapper">', unsafe_allow_html=True)
             webrtc_streamer(
                 key="sign-lang",
@@ -547,10 +786,10 @@ def page_live_translator() -> None:
                 "border:2px dashed rgba(99,102,241,0.3);border-radius:24px;"
                 "height:360px;display:flex;align-items:center;justify-content:center;"
                 "flex-direction:column;gap:12px;"
-                "box-shadow:8px 8px 20px rgba(0,0,0,0.5),'>"
+                "box-shadow:8px 8px 20px rgba(0,0,0,0.5);'>"
                 "<span style='font-size:2.5rem;'>📷</span>"
                 "<span style='color:#475569;font-weight:600;'>"
-                "Model not loaded — run training pipeline first</span></div>",
+                "No model loaded — run training pipeline first</span></div>",
                 unsafe_allow_html=True,
             )
 
@@ -564,7 +803,11 @@ def page_live_translator() -> None:
         # Subtitle strip
         if st.session_state["subtitles"]:
             with _lock:
-                subtitle_text = " ".join(_state["sentence"])
+                _mode_now = _state["mode"]
+                if _mode_now == "Character":
+                    subtitle_text = "".join(_state["char_sentence"])
+                else:
+                    subtitle_text = " ".join(_state["sentence"])
             if subtitle_text:
                 st.markdown(
                     f'<div class="subtitle-strip">📝 {subtitle_text}</div>',
@@ -573,14 +816,22 @@ def page_live_translator() -> None:
 
     # ── Right: Prediction + Sentence ──────────────────────────────────────────
     with col_info:
+        _mode_now = st.session_state["recognition_mode"]
+
         with _lock:
             _g  = _state["gesture"]
             _c  = _state["confidence"]
             _sf = _state["stable_count"]
-            _words = list(_state["sentence"])
+            if _mode_now == "Character":
+                _words        = list(_state["char_sentence"])
+                _stab_cfg     = st.session_state.get("char_stable_frames_cfg", CHARACTER_STABLE_FRAME_COUNT)
+                _debounce_cnt = _state["char_debounce_count"]
+            else:
+                _words    = list(_state["sentence"])
+                _stab_cfg = st.session_state.get("stable_frames_cfg", STABLE_FRAME_COUNT)
 
-        conf_pct = int(_c * 100)
-        _stab_cfg = st.session_state["stable_frames_cfg"]
+        conf_pct   = int(_c * 100)
+        stable_pct = int(min(_sf / max(_stab_cfg, 1), 1.0) * 100)
 
         if _c >= 0.75:
             g_grad   = "linear-gradient(135deg,#34d399,#10b981)"
@@ -592,12 +843,22 @@ def page_live_translator() -> None:
             g_grad   = "linear-gradient(135deg,#818cf8,#6366f1)"
             fill_cls = "conf-fill-low"
 
-        stable_pct = int(min(_sf / max(_stab_cfg, 1), 1.0) * 100)
-        meaning = GESTURE_MEANINGS.get(_g, "")
+        # In word mode show meaning; in character mode show nothing
+        meaning = GESTURE_MEANINGS.get(_g, "") if _mode_now == "Word" else ""
+
+        mode_badge = (
+            '<span style="font-size:0.7rem;color:#fbbf24;font-weight:700;'
+            'text-transform:uppercase;letter-spacing:1px;">🔤 Character Mode</span>'
+            if _mode_now == "Character"
+            else
+            '<span style="font-size:0.7rem;color:#818cf8;font-weight:700;'
+            'text-transform:uppercase;letter-spacing:1px;">🤙 Word Mode</span>'
+        )
 
         # Prediction card
         st.markdown(f"""
         <div class="clay-card clay-card-violet" style="text-align:center;margin-bottom:14px;">
+          <div style="margin-bottom:6px;">{mode_badge}</div>
           <div style="font-size:0.7rem;color:#64748b;font-weight:700;
                       text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">
             🎯 Current Prediction

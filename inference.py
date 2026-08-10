@@ -40,6 +40,11 @@ from config import (
     LANDMARK_FEATURES,
     POSE_FEATURES,
     SCALER_PATH,
+    # ── Character model paths (Model 2) ────────────────────────────────────────
+    CHAR_MODEL_TFLITE_PATH,
+    CHAR_LABEL_MAP_PATH,
+    CHAR_SCALER_PATH,
+    CHARACTER_CONFIDENCE_THRESHOLD,
 )
 from utils.logger           import get_logger
 from utils.mediapipe_helper import HandDetector
@@ -130,6 +135,167 @@ def load_scaler():
         return scaler
     logger.warning("Scaler not found at %s — running without feature scaling.", SCALER_PATH)
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Character model loading  (Model 2 — completely independent)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_character_tflite_model() -> tuple:
+    """
+    Load the character TFLite interpreter.
+
+    Returns
+    -------
+    (interpreter, input_idx, output_idx)
+
+    Raises
+    ------
+    FileNotFoundError : character_model.tflite is missing
+    ValueError        : model input shape is not (1, 42)
+    """
+    try:
+        import tflite_runtime.interpreter as tflite
+        Interpreter = tflite.Interpreter
+    except ImportError:
+        import tensorflow as tf
+        Interpreter = tf.lite.Interpreter
+
+    if not os.path.exists(CHAR_MODEL_TFLITE_PATH):
+        raise FileNotFoundError(
+            f"Character TFLite model not found: {CHAR_MODEL_TFLITE_PATH}\n"
+            "Run train_character_model.py then convert_character_tflite.py first."
+        )
+
+    interpreter = Interpreter(model_path=CHAR_MODEL_TFLITE_PATH)
+    interpreter.allocate_tensors()
+
+    input_idx  = interpreter.get_input_details()[0]["index"]
+    output_idx = interpreter.get_output_details()[0]["index"]
+
+    # Validate input shape — must be (1, 42)
+    input_shape = tuple(interpreter.get_input_details()[0]["shape"])
+    expected    = (1, LANDMARK_FEATURES)   # (1, 42)
+    if input_shape != expected:
+        raise ValueError(
+            f"Character model input shape mismatch!\n"
+            f"  Expected : {expected}\n"
+            f"  Got      : {input_shape}\n"
+            "Retrain character model with 42 features."
+        )
+
+    logger.info(
+        "Character TFLite model loaded: %s  (input shape: %s)",
+        CHAR_MODEL_TFLITE_PATH, input_shape,
+    )
+    return interpreter, input_idx, output_idx
+
+
+def load_character_label_map() -> dict[int, str]:
+    """
+    Load the integer → character-name mapping from character_label_map.json.
+
+    Returns
+    -------
+    dict {int: str}  e.g. {0: "A", 1: "B", …, 25: "Z", 26: "0", …}
+    """
+    if not os.path.exists(CHAR_LABEL_MAP_PATH):
+        raise FileNotFoundError(
+            f"Character label map not found: {CHAR_LABEL_MAP_PATH}\n"
+            "Run preprocess_characters.py and train_character_model.py first."
+        )
+    with open(CHAR_LABEL_MAP_PATH) as f:
+        raw = json.load(f)
+    inv = {int(v): k for k, v in raw.items()}
+    logger.info("Character label map loaded (%d classes).", len(inv))
+    return inv
+
+
+def load_character_scaler():
+    """
+    Load the character-model StandardScaler.
+
+    Validates the companion .meta.json to confirm the scaler was fitted
+    with the correct feature count (42).
+
+    Returns
+    -------
+    StandardScaler or None if missing (with a warning)
+    """
+    if not os.path.exists(CHAR_SCALER_PATH):
+        logger.warning(
+            "Character scaler not found at %s — running without scaling.",
+            CHAR_SCALER_PATH,
+        )
+        return None
+
+    # Validate companion metadata
+    meta_path = CHAR_SCALER_PATH + ".meta.json"
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            meta = json.load(f)
+        fc = meta.get("feature_count")
+        if fc is not None and fc != LANDMARK_FEATURES:
+            raise ValueError(
+                f"Character scaler feature count mismatch!\n"
+                f"  Scaler was fitted with : {fc} features\n"
+                f"  Inference expects      : {LANDMARK_FEATURES} features\n"
+                "Re-run train_character_model.py."
+            )
+
+    with open(CHAR_SCALER_PATH, "rb") as f:
+        scaler = pickle.load(f)
+    logger.info("Character scaler loaded: %s", CHAR_SCALER_PATH)
+    return scaler
+
+
+def predict_character(
+    features: list[float],
+    interpreter,
+    input_idx: int,
+    output_idx: int,
+    label_map: dict[int, str],
+    scaler,
+) -> tuple[str, float]:
+    """
+    Run one forward pass through the character TFLite model.
+
+    Parameters
+    ----------
+    features    : 42-element hand-landmark vector
+    interpreter : character TFLite interpreter
+    input_idx   : index of the input tensor
+    output_idx  : index of the output tensor
+    label_map   : {class_int: char_name}
+    scaler      : fitted character StandardScaler or None
+
+    Returns
+    -------
+    (char_name, confidence)
+
+    Raises
+    ------
+    ValueError : if len(features) != 42
+    """
+    if len(features) != LANDMARK_FEATURES:
+        raise ValueError(
+            f"Character predict received {len(features)} features — expected {LANDMARK_FEATURES}."
+        )
+
+    x = np.array(features, dtype=np.float32).reshape(1, -1)
+
+    if scaler is not None:
+        x = scaler.transform(x).astype(np.float32)
+
+    interpreter.set_tensor(input_idx, x)
+    interpreter.invoke()
+
+    probabilities = interpreter.get_tensor(output_idx)[0]
+    class_idx     = int(np.argmax(probabilities))
+    confidence    = float(probabilities[class_idx])
+    char_name     = label_map.get(class_idx, f"Class_{class_idx}")
+
+    return char_name, confidence
 
 
 # ─────────────────────────────────────────────────────────────────────────────

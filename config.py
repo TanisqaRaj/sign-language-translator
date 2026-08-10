@@ -82,6 +82,27 @@ MODEL_TFLITE_PATH = os.path.join(MODEL_DIR, "gesture_model.tflite")
 LABEL_MAP_PATH    = os.path.join(MODEL_DIR, "label_map.json")
 SCALER_PATH       = os.path.join(MODEL_DIR, "scaler.pkl")
 
+# ── Character Model (Model 2 — ISLRTC A-Z + 0-9) ─────────────────────────────
+# Completely independent from the word model above.
+# Never overwrite / mix these with the word model files.
+CHAR_MODEL_KERAS_PATH  = os.path.join(MODEL_DIR, "character_model.keras")
+CHAR_MODEL_TFLITE_PATH = os.path.join(MODEL_DIR, "character_model.tflite")
+CHAR_LABEL_MAP_PATH    = os.path.join(MODEL_DIR, "character_label_map.json")
+CHAR_SCALER_PATH       = os.path.join(MODEL_DIR, "character_scaler.pkl")
+CHAR_LANDMARKS_CSV     = os.path.join(BASE_DIR, "character_landmarks.csv")
+
+# Character class list (A-Z then 0-9 — 36 total)
+CHARACTER_LABELS = [
+    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J",
+    "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T",
+    "U", "V", "W", "X", "Y", "Z",
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+]
+NUM_CHARACTER_CLASSES = len(CHARACTER_LABELS)   # 36
+
+# Dataset directory for character images (ISLRTC dataset placed here)
+CHAR_DATASET_DIR = os.path.join(BASE_DIR, "dataset", "characters")
+
 # ── Training Hyperparameters ──────────────────────────────────────────────────
 EPOCHS           = 100
 BATCH_SIZE       = 32
@@ -99,6 +120,20 @@ CAMERA_INDEX          = 0
 
 # Confidence level below which "Did you mean?" suggestions appear
 LOW_CONFIDENCE_THRESHOLD = 0.70
+
+# ── Character Model Inference Thresholds ──────────────────────────────────────
+# Separate from word model — tune independently without affecting word mode.
+# Characters are static hand signs so a higher threshold is generally safe.
+WORD_CONFIDENCE_THRESHOLD      = 0.70   # min confidence for word model
+CHARACTER_CONFIDENCE_THRESHOLD = 0.70   # min confidence for character model
+
+# How many consecutive stable frames before a CHARACTER is accepted.
+# Slightly higher than words to avoid runaway HHHEELLLOO duplicates.
+CHARACTER_STABLE_FRAME_COUNT   = 20
+
+# How many frames of "silence" (no consistent prediction) before a new
+# character can be accepted again (debounce cooldown).
+CHARACTER_DEBOUNCE_FRAMES      = 15
 
 # ── TTS ───────────────────────────────────────────────────────────────────────
 TTS_RATE   = 150
