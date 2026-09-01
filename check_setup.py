@@ -315,7 +315,7 @@ def print_summary(word_ok: bool | None, char_ok: bool | None) -> None:
             print("  Character pipeline:")
             char_dataset_empty = not any(
                 len([
-                    f for f in os.listdir(os.path.join(CHAR_DATASET_DIR, l))
+                    f for f in os.listdir(os.path.join(CHAR_DATASET_DIR, label))
                     if f.lower().endswith((".jpg", ".jpeg", ".png"))
                 ]) > 0
                 for label in CHARACTER_LABELS
