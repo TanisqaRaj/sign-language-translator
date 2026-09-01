@@ -46,7 +46,6 @@ from tensorflow.keras.optimizers import Adam
 from config import (
     BATCH_SIZE,
     EPOCHS,
-    HYBRID_FEATURES,
     LABEL_MAP_PATH,
     LANDMARK_FEATURES,
     LANDMARKS_CSV,
@@ -116,15 +115,15 @@ def load_data(csv_path: str) -> tuple[pd.DataFrame, pd.Series]:
         raise ValueError("CSV must contain a 'label' column.")
 
     feature_cols = [c for c in df.columns if c != "label"]
-    if len(feature_cols) < HYBRID_FEATURES:
+    if len(feature_cols) < LANDMARK_FEATURES:
         raise ValueError(
-            f"Expected at least {HYBRID_FEATURES} feature columns, "
+            f"Expected at least {LANDMARK_FEATURES} feature columns, "
             f"found {len(feature_cols)}.\n"
-            "Re-run preprocess.py with the hybrid pipeline to regenerate landmarks.csv."
+            "Re-run preprocess.py to regenerate landmarks.csv."
         )
 
-    # Use exactly the first HYBRID_FEATURES columns as features
-    feature_cols = feature_cols[:HYBRID_FEATURES]
+    # Use exactly the first LANDMARK_FEATURES columns as features
+    feature_cols = feature_cols[:LANDMARK_FEATURES]
 
     X = df[feature_cols]
     y = df["label"]
@@ -287,20 +286,20 @@ def normalize_features(
 # Model architecture & callbacks
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_model(num_classes: int, input_dim: int = HYBRID_FEATURES) -> Model:
+def build_model(num_classes: int, input_dim: int = LANDMARK_FEATURES) -> Model:
     """Build and compile the Dense Neural Network classifier.
 
     Why a DNN and not a CNN?
     ─────────────────────────
-    The input is a flat 76-element hybrid vector: 42 MediaPipe hand-landmark
-    coordinates + 34 MoveNet body-pose coordinates.  This is tabular /
-    structured data with no 2-D spatial locality.  A DNN with
-    BatchNormalization and Dropout achieves strong accuracy on this task with
-    far fewer parameters and trains ~10× faster on CPU than a CNN would.
+    The input is a flat 42-element hand-landmark vector from MediaPipe
+    (x,y × 21 landmarks).  This is tabular / structured data with no 2-D
+    spatial locality.  A DNN with BatchNormalization and Dropout achieves
+    strong accuracy on this task with far fewer parameters and trains ~10×
+    faster on CPU than a CNN would.
 
     Architecture
     ─────────────
-    Input(76)
+    Input(42)
       → Dense(256, relu) → BatchNorm → Dropout(0.4)
       → Dense(128, relu) → BatchNorm → Dropout(0.3)
       → Dense(64,  relu) →            Dropout(0.2)
@@ -311,7 +310,7 @@ def build_model(num_classes: int, input_dim: int = HYBRID_FEATURES) -> Model:
     num_classes : int
         Number of gesture classes — determines the output layer width.
     input_dim : int, optional
-        Number of input features (default: 76 from ``config.HYBRID_FEATURES``).
+        Number of input features (default: 42 from ``config.LANDMARK_FEATURES``).
 
     Returns
     -------
@@ -319,8 +318,8 @@ def build_model(num_classes: int, input_dim: int = HYBRID_FEATURES) -> Model:
         Compiled Keras model ready for training.
     """
     logger.info(
-        "Building DNN — input_dim: %d (hand=%d + pose=%d), num_classes: %d",
-        input_dim, LANDMARK_FEATURES, input_dim - LANDMARK_FEATURES, num_classes
+        "Building DNN — input_dim: %d (hand-only features), num_classes: %d",
+        input_dim, num_classes,
     )
 
     inputs = Input(shape=(input_dim,), name="landmarks_input")
@@ -451,6 +450,15 @@ def train(
         "Starting training — max epochs: %d, batch size: %d", EPOCHS, BATCH_SIZE
     )
 
+    # Compute class weights to handle dataset imbalance
+    # (e.g. No=69, Help=92 vs Hello=300 — without this, minority classes are ignored)
+    from sklearn.utils.class_weight import compute_class_weight
+    classes = np.unique(y_train)
+    weights = compute_class_weight("balanced", classes=classes, y=y_train)
+    class_weight_dict = dict(zip(classes.tolist(), weights.tolist()))
+    logger.info("Class weights: %s", class_weight_dict)
+    print(f"\n  Class weights (imbalance correction): {class_weight_dict}\n")
+
     # Set global random seeds for reproducibility
     tf.random.set_seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
@@ -461,6 +469,7 @@ def train(
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
         callbacks=callbacks,
+        class_weight=class_weight_dict,
         verbose=1,
     )
 

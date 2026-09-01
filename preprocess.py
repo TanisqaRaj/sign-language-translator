@@ -1,19 +1,15 @@
 # =============================================================================
 # preprocess.py
-# Phase 3 – Hybrid Landmark Extraction (MediaPipe Hands + MoveNet Pose)
+# Phase 3 – Hand Landmark Extraction (MediaPipe Hands only)
 # =============================================================================
 # Usage:
 #   python preprocess.py
 #
 # For every image in dataset/ this script:
 #   1. Runs MediaPipe Hands  → 42 normalised hand-landmark features (x,y × 21)
-#   2. Runs MoveNet Lightning → 34 normalised body-pose features   (x,y × 17)
-#   3. Concatenates both     → 76-feature hybrid vector per sample
-#   4. Saves landmarks.csv and landmarks.npy
+#   2. Saves landmarks.csv
 #
 # Images where no hand is detected are skipped.
-# Images where MoveNet finds no visible person yield zeroed pose features
-# (the hand features still contribute — the sample is kept).
 # =============================================================================
 
 import os
@@ -33,14 +29,10 @@ from config import (
     GESTURE_LABELS,
     MODEL_DIR,
     LABEL_MAP_PATH,
-    HYBRID_FEATURES,
     LANDMARK_FEATURES,
-    POSE_FEATURES,
-    NUM_POSE_KEYPOINTS,
 )
 from utils.logger import get_logger
 from utils.mediapipe_helper import HandDetector
-from utils.movenet_helper   import MoveNetDetector
 
 logger = get_logger(__name__)
 
@@ -84,28 +76,21 @@ def normalise_landmarks(landmarks_flat: list[float]) -> list[float]:
 # Per-image hybrid extraction
 # ─────────────────────────────────────────────────────────────────────────────
 
-def extract_hybrid_features(
+def extract_hand_features(
     image_path: str,
     hand_detector: HandDetector,
-    pose_detector: MoveNetDetector,
 ) -> list[float] | None:
     """
-    Extract the 76-feature hybrid vector from one image.
-
-    Feature layout
-    --------------
-    [0  … 41]  42 normalised hand-landmark features  (MediaPipe Hands)
-    [42 … 75]  34 normalised body-pose features       (MoveNet Lightning)
+    Extract 42 normalised hand-landmark features from one image.
 
     Parameters
     ----------
-    image_path     : absolute path to a .jpg / .png image
-    hand_detector  : shared HandDetector instance
-    pose_detector  : shared MoveNetDetector instance
+    image_path    : absolute path to a .jpg / .png image
+    hand_detector : shared HandDetector instance
 
     Returns
     -------
-    list[float] of length 76, or None if no hand was detected.
+    list[float] of length 42, or None if no hand was detected.
     """
     try:
         frame = cv2.imread(image_path)
@@ -113,26 +98,11 @@ def extract_hybrid_features(
             logger.warning("Cannot read image: %s", image_path)
             return None
 
-        # ── MediaPipe: hand landmarks ─────────────────────────────────────────
         hand_lm, _ = hand_detector.find_landmarks(frame, draw=False)
-
-        # Skip if no hand — the hand signal is the primary classifier
         if hand_lm is None:
             return None
 
-        hand_features = normalise_landmarks(hand_lm)   # 42 floats
-
-        # ── MoveNet: body pose ────────────────────────────────────────────────
-        pose_raw, _ = pose_detector.detect(frame, draw=False)
-
-        if pose_raw is not None:
-            pose_features = MoveNetDetector.normalise_pose(pose_raw)  # 34 floats
-        else:
-            # Person not visible → zero-fill pose block (hand features kept)
-            pose_features = [0.0] * POSE_FEATURES
-
-        # ── Concatenate ───────────────────────────────────────────────────────
-        return hand_features + pose_features   # 76 floats
+        return normalise_landmarks(hand_lm)   # 42 floats
 
     except Exception as exc:
         logger.error("Error processing %s: %s", image_path, exc)
@@ -145,21 +115,17 @@ def extract_hybrid_features(
 
 def build_column_names() -> list[str]:
     """
-    Return CSV column names for the hybrid feature vector.
+    Return CSV column names for the 42-feature hand landmark vector.
 
-    Layout: label | hx0 hy0 … hx20 hy20 | px0 py0 … px16 py16
+    Layout: label | hx0 hy0 … hx20 hy20
 
     Returns
     -------
-    list[str] of length 77  (1 label + 42 hand + 34 pose)
+    list[str] of length 43  (1 label + 42 hand features)
     """
     cols = ["label"]
-    # Hand landmark columns  hx0, hy0 … hx20, hy20
     for i in range(NUM_LANDMARKS):
         cols.extend([f"hx{i}", f"hy{i}"])
-    # Pose keypoint columns  px0, py0 … px16, py16
-    for i in range(NUM_POSE_KEYPOINTS):
-        cols.extend([f"px{i}", f"py{i}"])
     return cols
 
 
@@ -183,9 +149,8 @@ def process_dataset() -> pd.DataFrame:
             "Run collect_data.py first."
         )
 
-    print("\n  Initialising detectors...")
+    print("\n  Initialising detector...")
     hand_detector = HandDetector(static_image_mode=True)  # static mode for images
-    pose_detector = MoveNetDetector()
 
     rows  = []
     stats = {}
@@ -203,8 +168,8 @@ def process_dataset() -> pd.DataFrame:
 
     logger.info("Found %d gesture classes: %s", len(gesture_dirs), gesture_dirs)
     print(f"\n{'='*60}")
-    print(f"  Extracting hybrid features from {len(gesture_dirs)} gesture classes")
-    print(f"  Feature vector: {LANDMARK_FEATURES} hand + {POSE_FEATURES} pose = {HYBRID_FEATURES} total")
+    print(f"  Extracting hand features from {len(gesture_dirs)} gesture classes")
+    print(f"  Feature vector: {LANDMARK_FEATURES} hand landmarks")
     print(f"{'='*60}\n")
 
     for gesture in gesture_dirs:
@@ -223,7 +188,7 @@ def process_dataset() -> pd.DataFrame:
 
         for img_file in tqdm(image_files, desc=f"  {gesture:<20}", unit="img", ncols=72):
             img_path = os.path.join(folder, img_file)
-            features = extract_hybrid_features(img_path, hand_detector, pose_detector)
+            features = extract_hand_features(img_path, hand_detector)
 
             if features is None:
                 skipped += 1
@@ -236,6 +201,7 @@ def process_dataset() -> pd.DataFrame:
         logger.info("'%s': %d saved, %d skipped", gesture, saved, skipped)
 
     hand_detector.close()
+
 
     if not rows:
         raise RuntimeError(
@@ -277,16 +243,7 @@ def save_outputs(df: pd.DataFrame) -> None:
     # ── CSV ───────────────────────────────────────────────────────────────────
     df.to_csv(LANDMARKS_CSV, index=False)
     logger.info("Saved landmarks CSV: %s  (%d rows)", LANDMARKS_CSV, len(df))
-    print(f"  [OK] landmarks.csv saved  ({len(df)} samples, {HYBRID_FEATURES} features)")
-
-    # ── NumPy ─────────────────────────────────────────────────────────────────
-    npy_path     = LANDMARKS_CSV.replace(".csv", ".npy")
-    feature_cols = [c for c in df.columns if c != "label"]
-    X = df[feature_cols].values.astype(np.float32)
-    y = df["label"].values
-    np.save(npy_path, {"X": X, "y": y})
-    logger.info("Saved landmarks NumPy: %s", npy_path)
-    print(f"  [OK] landmarks.npy saved  (shape: {X.shape})")
+    print(f"  [OK] landmarks.csv saved  ({len(df)} samples, {LANDMARK_FEATURES} features)")
 
     # ── Label map ─────────────────────────────────────────────────────────────
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -304,10 +261,10 @@ def save_outputs(df: pd.DataFrame) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    """Run the full hybrid preprocessing pipeline."""
-    logger.info("Starting hybrid landmark extraction pipeline.")
-    print("\n  Sign Language Translator - Hybrid Feature Extraction\n")
-    print("  Pipeline: MediaPipe Hands (42) + MoveNet Lightning (34) = 76 features\n")
+    """Run the hand landmark extraction pipeline."""
+    logger.info("Starting hand landmark extraction pipeline.")
+    print("\n  Sign Language Translator - Hand Feature Extraction\n")
+    print("  Pipeline: MediaPipe Hands → 42 features\n")
 
     try:
         df = process_dataset()
@@ -317,7 +274,7 @@ def main() -> None:
         print(f"\n  [ERROR]: {exc}")
         sys.exit(1)
 
-    print("\n  Preprocessing complete!  Run train_model.py next.\n")
+    print("\n  Preprocessing complete! Run train_model.py next.\n")
     logger.info("Preprocessing pipeline complete. %d total samples.", len(df))
 
 

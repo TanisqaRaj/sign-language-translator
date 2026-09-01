@@ -29,10 +29,9 @@ sample_check.jpg
 # ── Trained Keras / H5 model files (tflite is already converted) ──────────────
 models/*.keras
 models/*.h5
-models/scaler.pkl
 
-# NOTE: models/gesture_model.tflite, models/movenet_lightning_fp16.tflite,
-#       and models/label_map.json ARE included (required by app_cloud.py)
+# NOTE: models/gesture_model.tflite, models/label_map.json, and models/scaler.pkl
+#       ARE included (required by app_cloud.py)
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 logs/

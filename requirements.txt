@@ -27,8 +27,16 @@ seaborn==0.13.2                  # Confusion matrix heatmap
 # ── Web Application ───────────────────────────────────────────────────────────
 streamlit==1.35.0                # Interactive browser UI
 
-# ── Text-to-Speech ────────────────────────────────────────────────────────────
+# ── Browser WebRTC Camera (app_cloud.py) ──────────────────────────────────────
+# Required to run app_cloud.py (cloud / Docker deployment).
+# NOT needed for app.py (local OpenCV capture).
+streamlit-webrtc==0.47.4         # WebRTC bridge for browser-based webcam
+aiortc==1.9.0                    # WebRTC / ICE implementation (dependency of streamlit-webrtc)
+av==12.3.0                       # PyAV video frame handling (dependency of streamlit-webrtc)
+
+# ── Text-to-Speech (app.py / character_inference.py local mode) ───────────────
 pyttsx3==2.90                    # Offline TTS engine (no internet required)
+                                 # app_cloud.py uses Web Speech API instead
 
 # ── Multi-Language Translation ────────────────────────────────────────────────
 deep-translator==1.11.4          # GoogleTranslator wrapper for 13 languages

@@ -122,9 +122,9 @@ def print_image_summary(counts: dict[str, int]) -> bool:
     enough images to proceed with preprocessing.
     """
     total = sum(counts.values())
-    empty = [l for l, c in counts.items() if c == 0]
-    sparse = [l for l, c in counts.items() if 0 < c < MIN_IMAGES_PER_CLASS]
-    ready  = [l for l, c in counts.items() if c >= MIN_IMAGES_PER_CLASS]
+    empty = [lbl for lbl, c in counts.items() if c == 0]
+    sparse = [lbl for lbl, c in counts.items() if 0 < c < MIN_IMAGES_PER_CLASS]
+    ready  = [lbl for lbl, c in counts.items() if c >= MIN_IMAGES_PER_CLASS]
 
     print(f"\n{'='*64}")
     print(f"  {'Class':<6} {'Images':>8}  Status")

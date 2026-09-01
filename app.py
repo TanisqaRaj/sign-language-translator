@@ -12,14 +12,16 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import (
     CAMERA_INDEX, CONFIDENCE_THRESHOLD, STABLE_FRAME_COUNT,
     PREDICTION_BUFFER_LEN, MODEL_TFLITE_PATH, LABEL_MAP_PATH, MODEL_DIR,
-    POSE_FEATURES, GESTURE_LABELS, GESTURE_MEANINGS,
+    GESTURE_LABELS, GESTURE_MEANINGS,
     LOW_CONFIDENCE_THRESHOLD, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE,
     DEFAULT_THEME, DEFAULT_FONT_SIZE, AUTO_SPEAK_DEFAULT,
     SUBTITLE_ENABLED_DEFAULT, NAV_PAGES,
+    # Character model
+    CHARACTER_CONFIDENCE_THRESHOLD, CHARACTER_STABLE_FRAME_COUNT,
+    CHARACTER_DEBOUNCE_FRAMES, CHARACTER_LABELS,
 )
 from utils.logger           import get_logger
-from utils.mediapipe_helper import HandDetector
-from utils.movenet_helper   import MoveNetDetector
+from utils.mediapipe_helper import HandDetector, MultiHandResult
 from utils.tts_engine       import TTSEngine
 from utils.translator       import translate, translate_all_languages, get_language_list
 from utils.gesture_history  import GestureHistory
@@ -32,7 +34,11 @@ from utils.ui_components    import (
     render_loading_sequence,
 )
 from preprocess  import normalise_landmarks
-from inference   import load_tflite_model, load_label_map, load_scaler, predict, PredictionSmoother
+from inference   import (
+    load_tflite_model, load_label_map, load_scaler, predict, PredictionSmoother,
+    load_character_tflite_model, load_character_label_map, load_character_scaler,
+    predict_character,
+)
 
 logger = get_logger(__name__)
 
@@ -67,9 +73,14 @@ def _init_session_state() -> None:
         "all_probs":         {},        # {label: prob} for confidence meter
         "fps":               0.0,
         "model_loaded":      False,
+        "char_model_loaded": False,
         "error_msg":         "",
+        # Recognition mode: "Word" or "Character"
+        "recognition_mode":  "Word",
         # Sentence builder
         "sentence":          [],
+        # Character sentence (list of chars)
+        "char_sentence":     [],
         # Translation
         "target_language":   DEFAULT_LANGUAGE,
         "last_translation":  "",
@@ -88,6 +99,9 @@ def _init_session_state() -> None:
         # Camera settings
         "camera_index":      CAMERA_INDEX,
         "detection_threshold": CONFIDENCE_THRESHOLD,
+        # Character model thresholds (tunable in Settings)
+        "char_conf_threshold":    CHARACTER_CONFIDENCE_THRESHOLD,
+        "char_stable_frames_cfg": CHARACTER_STABLE_FRAME_COUNT,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -107,18 +121,33 @@ def _init_session_state() -> None:
 
 @st.cache_resource(show_spinner=False)
 def _load_resources():
-    """Load model, detector, and TTS once; cache for the lifetime of the server."""
+    """Load word model, character model, detector, and TTS once; cache for the lifetime of the server.
+
+    Both models use 42 hand-landmark features (MediaPipe only).
+    MoveNet is NOT used — keeps the feature vector at exactly 42 floats.
+    """
     try:
         interp, in_idx, out_idx = load_tflite_model()
         label_map   = load_label_map()
         scaler      = load_scaler()
         detector    = HandDetector()
-        pose_det    = MoveNetDetector()
         tts         = TTSEngine()
-        return interp, in_idx, out_idx, label_map, scaler, detector, pose_det, tts
+        return interp, in_idx, out_idx, label_map, scaler, detector, tts
     except Exception as exc:
         st.session_state["error_msg"] = str(exc)
-        return (None,) * 8
+        return (None,) * 7
+
+
+@st.cache_resource(show_spinner=False)
+def _load_char_resources():
+    """Load character model (A-Z + 0-9) once; completely independent from word model."""
+    try:
+        c_interp, c_in, c_out = load_character_tflite_model()
+        c_label_map = load_character_label_map()
+        c_scaler    = load_character_scaler()
+        return c_interp, c_in, c_out, c_label_map, c_scaler, None
+    except Exception as exc:
+        return None, None, None, None, None, str(exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -126,27 +155,35 @@ def _load_resources():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _process_frame(frame, interp, in_idx, out_idx, label_map, scaler,
-                   detector, pose_det, smoother):
+                   detector, smoother):
     """
     Run hand detection + model inference on one frame.
 
-    Returns (annotated_frame, gesture_or_None, confidence, has_hand, all_probs_dict)
+    Uses 42 normalised MediaPipe hand-landmark features only (no MoveNet).
+    This matches the retrained gesture_model.tflite input shape of (1, 42).
+
+    Two-hand behaviour
+    ------------------
+    Both hand skeletons are drawn when visible.  Inference always runs on the
+    *dominant* hand (right preferred, left fallback) so the existing 42-feature
+    models are never given a different input shape.
+
+    Returns
+    -------
+    (annotated_frame, gesture_or_None, confidence, has_hand,
+     all_probs_dict, multi_hand_result)
     """
-    raw_lm, annotated = detector.find_landmarks(frame, draw=True)
-    has_hand = raw_lm is not None
+    # ── Two-hand-aware detection — draws ALL visible skeletons ────────────────
+    mhr, annotated = detector.find_all_landmarks(frame, draw=True)
+    has_hand = mhr.dominant is not None
 
     if not has_hand:
         smoother.reset()
-        return annotated, None, 0.0, False, {}
+        return annotated, None, 0.0, False, {}, mhr
 
-    hand_feats  = normalise_landmarks(raw_lm)
-    pose_raw, _ = pose_det.detect(frame, draw=False)
-    pose_feats  = (
-        MoveNetDetector.normalise_pose(pose_raw)
-        if pose_raw is not None
-        else [0.0] * POSE_FEATURES
-    )
-    features = hand_feats + pose_feats
+    # Dominant-hand landmarks → 42 normalised features for the model
+    raw_lm   = mhr.dominant.landmarks
+    features = normalise_landmarks(raw_lm)
 
     raw_pred, conf = predict(
         features, interp, in_idx, out_idx, label_map, scaler
@@ -154,17 +191,15 @@ def _process_frame(frame, interp, in_idx, out_idx, label_map, scaler,
     gesture, confidence = smoother.update(raw_pred, conf)
 
     # Build per-class probability dict for the confidence meter
-    # PredictionSmoother doesn't expose all_probs, so simulate with raw conf
     all_probs = {}
     if raw_pred:
         all_probs[raw_pred] = conf
-        # Fill remaining gestures with small complementary values
         rest = max(0.0, 1.0 - conf) / max(len(GESTURE_LABELS) - 1, 1)
         for lbl in GESTURE_LABELS:
             if lbl != raw_pred:
                 all_probs[lbl] = rest
 
-    return annotated, gesture, confidence, has_hand, all_probs
+    return annotated, gesture, confidence, has_hand, all_probs, mhr
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -741,8 +776,49 @@ def _render_sentence_builder(tts) -> None:
                 st.rerun()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Two-hand debug strip helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _draw_hand_debug_strip(frame: np.ndarray, mhr: "MultiHandResult") -> None:
+    """
+    Draw a compact one-line debug strip at the top-right of the frame showing:
+      Hands: N  |  L: ✓/✗  |  R: ✓/✗
+
+    This lets the user instantly verify that two-hand detection is working.
+    The strip is semi-transparent and does not interfere with the gesture HUD.
+    """
+    h, w = frame.shape[:2]
+
+    # Build label string
+    n       = mhr.count
+    l_col   = (0, 220, 0)  if mhr.left_detected  else (80, 80, 200)
+    r_col   = (0, 220, 0)  if mhr.right_detected else (80, 80, 200)
+    n_col   = (0, 220, 0)  if n > 0              else (80, 80, 200)
+
+    strip_y = 100   # pixel row below the main gesture HUD banner
+
+    # Semi-transparent background pill
+    ov = frame.copy()
+    cv2.rectangle(ov, (w - 220, strip_y - 14), (w - 2, strip_y + 6), (0, 0, 0), -1)
+    cv2.addWeighted(ov, 0.5, frame, 0.5, 0, frame)
+
+    font  = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.42
+    thick = 1
+
+    # "Hands: N"
+    cv2.putText(frame, f"Hands:{n}", (w - 216, strip_y),
+                font, scale, n_col, thick)
+    # "L: ✓/✗"  — use ASCII substitutes because HERSHEY doesn't render Unicode
+    l_text = "L:OK" if mhr.left_detected  else "L:--"
+    r_text = "R:OK" if mhr.right_detected else "R:--"
+    cv2.putText(frame, l_text, (w - 148, strip_y), font, scale, l_col, thick)
+    cv2.putText(frame, r_text, (w - 90,  strip_y), font, scale, r_col, thick)
+
+
 def _webcam_loop(frame_ph, gesture_ph, interp, in_idx, out_idx, label_map,
-                 scaler, detector, pose_det, tts) -> None:
+                 scaler, detector, tts) -> None:
     """
     Core webcam capture + inference loop.
     Renders frames into Streamlit placeholders without blocking the full page.
@@ -777,9 +853,9 @@ def _webcam_loop(frame_ph, gesture_ph, interp, in_idx, out_idx, label_map,
                 continue
 
             frame = cv2.flip(frame, 1)
-            annotated, gesture, confidence, has_hand, all_probs = _process_frame(
+            annotated, gesture, confidence, has_hand, all_probs, mhr = _process_frame(
                 frame, interp, in_idx, out_idx, label_map, scaler,
-                detector, pose_det, smoother,
+                detector, smoother,
             )
 
             # ── FPS ──────────────────────────────────────────────────────────
@@ -798,6 +874,9 @@ def _webcam_loop(frame_ph, gesture_ph, interp, in_idx, out_idx, label_map,
                     annotated, f"{gesture} ({confidence:.0%})",
                     (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 212, 255), 2,
                 )
+
+            # ── Two-hand detection debug strip ───────────────────────────────
+            _draw_hand_debug_strip(annotated, mhr)
 
             # ── Stability tracking ────────────────────────────────────────────
             if gesture and confidence >= det_thresh:
@@ -887,21 +966,223 @@ def _webcam_loop(frame_ph, gesture_ph, interp, in_idx, out_idx, label_map,
         stop_ph.empty()
 
 
+def _char_webcam_loop(frame_ph, info_ph, c_interp, c_in, c_out,
+                      c_label_map, c_scaler, detector, tts) -> None:
+    """
+    Webcam loop for Character mode (A-Z + 0-9).
+
+    Acceptance logic  (mirrors character_inference.py / app_cloud.py):
+      1. Raw confidence >= char_conf_threshold
+      2. Same character stable for char_stable_frames consecutive frames
+      3. char_debounce_count >= CHARACTER_DEBOUNCE_FRAMES since last accepted
+         (forces hand to drop between letters — prevents HHHELLO)
+      4. char_last_accepted != current char  (no silent repeats)
+    """
+    import collections
+
+    cam_idx = st.session_state.get("camera_index", CAMERA_INDEX)
+    cap = cv2.VideoCapture(cam_idx)
+    if not cap.isOpened():
+        st.error(f"Cannot open camera at index {cam_idx}.")
+        st.session_state["running"] = False
+        return
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    char_smoother = PredictionSmoother()
+    stable_frames   = 0
+    last_stable     = None
+    debounce_count  = 0
+    last_accepted   = None
+    t_prev          = time.perf_counter()
+
+    conf_thr   = st.session_state.get("char_conf_threshold",    CHARACTER_CONFIDENCE_THRESHOLD)
+    stable_thr = st.session_state.get("char_stable_frames_cfg", CHARACTER_STABLE_FRAME_COUNT)
+
+    stop_ph = st.empty()
+    stop_clicked = stop_ph.button("⏹ Stop Camera", key="stop_btn_char",
+                                   type="secondary", use_container_width=True)
+
+    _loop_iter = 0
+    try:
+        while st.session_state["running"] and not stop_clicked:
+            _loop_iter += 1
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            frame = cv2.flip(frame, 1)
+
+            mhr_char, annotated = detector.find_all_landmarks(frame, draw=True)
+            has_hand   = mhr_char.dominant is not None
+            char_pred  = None
+            confidence = 0.0
+
+            if has_hand:
+                raw_lm   = mhr_char.dominant.landmarks
+                features = normalise_landmarks(raw_lm)
+                raw_char, conf = predict_character(
+                    features, c_interp, c_in, c_out, c_label_map, c_scaler,
+                )
+                if conf >= conf_thr:
+                    char_pred, confidence = char_smoother.update(raw_char, conf)
+                else:
+                    char_smoother.reset()
+            else:
+                char_smoother.reset()
+
+            # ── Stability + debounce ──────────────────────────────────────────
+            if char_pred is not None:
+                if char_pred == last_stable:
+                    stable_frames += 1
+                else:
+                    stable_frames = 1
+                    last_stable   = char_pred
+
+                if stable_frames >= stable_thr:
+                    if debounce_count >= CHARACTER_DEBOUNCE_FRAMES:
+                        if last_accepted != char_pred:
+                            st.session_state["char_sentence"].append(char_pred)
+                            last_accepted = char_pred
+                            # Auto-speak only full sentence, not individual chars
+                        debounce_count = 0
+                    else:
+                        debounce_count += 1
+                else:
+                    debounce_count += 1
+            else:
+                stable_frames = 0
+                last_stable   = None
+                # Accumulate debounce cooldown while hand is absent
+                debounce_count = min(debounce_count + 1, CHARACTER_DEBOUNCE_FRAMES + 5)
+
+            # ── FPS ───────────────────────────────────────────────────────────
+            t_now  = time.perf_counter()
+            fps    = 1.0 / max(t_now - t_prev, 1e-6)
+            t_prev = t_now
+
+            # ── HUD overlay ───────────────────────────────────────────────────
+            h, w = annotated.shape[:2]
+            ov = annotated.copy()
+            cv2.rectangle(ov, (0, 0), (w, 90), (0, 0, 0), -1)
+            cv2.addWeighted(ov, 0.55, annotated, 0.45, 0, annotated)
+
+            color = (0, 220, 0) if char_pred else (80, 80, 220)
+            label = char_pred if char_pred else ("No hand" if not has_hand else "Low conf")
+            cv2.putText(annotated, f"[Character] {label}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+            if char_pred:
+                cv2.putText(annotated, f"{confidence:.0%}", (10, 58),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 1)
+
+            # Stability bar
+            stable_pct = min(stable_frames / max(stable_thr, 1), 1.0)
+            bar_w = w - 24
+            cv2.rectangle(annotated, (12, 68), (12 + bar_w, 80), (40, 40, 40), -1)
+            fill_w = int(bar_w * stable_pct)
+            if fill_w > 0:
+                bc = (0, int(200 * stable_pct), int(200 * (1 - stable_pct)))
+                cv2.rectangle(annotated, (12, 68), (12 + fill_w, 80), bc, -1)
+
+            # Ready dot
+            dot_color = (0, 200, 0) if debounce_count >= CHARACTER_DEBOUNCE_FRAMES else (0, 165, 255)
+            cv2.circle(annotated, (w - 18, 18), 7, dot_color, -1)
+
+            cv2.putText(annotated, f"FPS: {fps:.0f}", (w - 110, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 215, 255), 1)
+
+            # Bottom sentence strip
+            ov2 = annotated.copy()
+            cv2.rectangle(ov2, (0, h - 40), (w, h), (0, 0, 0), -1)
+            cv2.addWeighted(ov2, 0.55, annotated, 0.45, 0, annotated)
+            sentence_txt = "".join(st.session_state["char_sentence"]) or "—"
+            cv2.putText(annotated, f"Text: {sentence_txt}", (10, h - 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (210, 210, 210), 1)
+
+            # ── Two-hand detection debug strip ────────────────────────────────
+            _draw_hand_debug_strip(annotated, mhr_char)
+
+            # ── Show frame ────────────────────────────────────────────────────
+            rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            with frame_ph.container():
+                st.image(rgb, channels="RGB", use_column_width=True)
+
+            # ── Right panel ───────────────────────────────────────────────────
+            char_sentence = st.session_state["char_sentence"]
+            full_text = "".join(char_sentence)
+            with info_ph.container():
+                st.markdown("#### 🔤 Character Mode")
+                st.markdown(
+                    f"**Current:** `{char_pred or '—'}`  "
+                    f"{'&nbsp;' * 4}Confidence: `{confidence:.0%}`"
+                )
+                stable_bar_pct = int(stable_pct * 100)
+                st.progress(stable_bar_pct,
+                    text=f"Stability {stable_frames}/{stable_thr}")
+                st.markdown("---")
+                st.markdown("**Built text:**")
+                st.markdown(
+                    f"<div style='font-size:1.8rem;font-weight:700;letter-spacing:4px;"
+                    f"color:#a78bfa;min-height:2.5rem;'>{full_text or '—'}</div>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown("---")
+                b1, b2, b3, b4 = st.columns(4)
+                with b1:
+                    if st.button("🗑 Clear", key=f"char_clear_{_loop_iter}"):
+                        st.session_state["char_sentence"] = []
+                        last_accepted = None
+                with b2:
+                    if st.button("⬅ Backspace", key=f"char_back_{_loop_iter}"):
+                        if st.session_state["char_sentence"]:
+                            st.session_state["char_sentence"].pop()
+                            last_accepted = None
+                with b3:
+                    if st.button("␣ Space", key=f"char_space_{_loop_iter}"):
+                        st.session_state["char_sentence"].append(" ")
+                        last_accepted = None
+                with b4:
+                    if st.button("🔊 Speak", key=f"char_speak_{_loop_iter}"):
+                        if full_text.strip() and tts:
+                            tts.speak(full_text.strip(), force=True)
+
+    finally:
+        cap.release()
+        st.session_state["running"] = False
+        stop_ph.empty()
+
+
 def _render_live_translator(interp, in_idx, out_idx, label_map,
-                             scaler, detector, pose_det, tts) -> None:
-    """Full Live Translator page layout."""
+                             scaler, detector, tts,
+                             c_interp, c_in, c_out, c_label_map, c_scaler) -> None:
+    """Full Live Translator page layout — supports Word mode and Character mode."""
     st.markdown("""
     <div style="margin-bottom:16px;">
       <div class="clay-title" style="font-size:1.8rem;text-align:left;">📷 Live Translator</div>
     </div>
     """, unsafe_allow_html=True)
 
-    lang_col, _, auto_col = st.columns([2, 3, 2])
+    # ── Mode toggle + language + auto-speak ───────────────────────────────────
+    mode_col, lang_col, auto_col = st.columns([2, 2, 2])
+    with mode_col:
+        mode = st.radio(
+            "Recognition Mode",
+            ["Word", "Character"],
+            index=0 if st.session_state["recognition_mode"] == "Word" else 1,
+            horizontal=True,
+            key="mode_radio",
+            help="Word: recognises 10 gestures (Hello, Good…)  |  Character: A-Z + 0-9",
+        )
+        if mode != st.session_state["recognition_mode"]:
+            st.session_state["recognition_mode"] = mode
+            st.session_state["running"] = False   # stop camera on mode switch
+            st.rerun()
     with lang_col:
-        lang_list = get_language_list()
-        cur_idx   = lang_list.index(st.session_state["target_language"])
-        new_lang  = st.selectbox("🌍 Target Language", lang_list, index=cur_idx, key="live_lang")
-        st.session_state["target_language"] = new_lang
+        if mode == "Word":
+            lang_list = get_language_list()
+            cur_idx   = lang_list.index(st.session_state["target_language"])
+            new_lang  = st.selectbox("🌍 Target Language", lang_list, index=cur_idx, key="live_lang")
+            st.session_state["target_language"] = new_lang
     with auto_col:
         auto = st.checkbox("Auto-Speak", value=st.session_state["auto_speak"], key="live_auto_speak")
         st.session_state["auto_speak"] = auto
@@ -914,37 +1195,61 @@ def _render_live_translator(interp, in_idx, out_idx, label_map,
         frame_ph = st.empty()
         if not st.session_state["running"]:
             frame_ph.markdown(camera_placeholder_html(), unsafe_allow_html=True)
-            if interp is None:
+
+            # Show error if relevant model is missing
+            if mode == "Word" and interp is None:
                 st.markdown(
-                    '<div class="clay-error">⚠️ Model not loaded. Run training pipeline first.</div>',
+                    '<div class="clay-error">⚠️ Word model not loaded. Run train_model.py first.</div>',
                     unsafe_allow_html=True,
                 )
-            elif st.button("▶  Start Camera", type="primary", use_container_width=True, key="btn_start"):
-                st.session_state["running"] = True
-                st.rerun()
+            elif mode == "Character" and c_interp is None:
+                st.markdown(
+                    '<div class="clay-error">⚠️ Character model not loaded. Run train_character_model.py first.</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                if st.button("▶  Start Camera", type="primary", use_container_width=True, key="btn_start"):
+                    st.session_state["running"] = True
+                    st.rerun()
 
     with info_col:
         gesture_ph = st.empty()
 
         if not st.session_state["running"]:
-            render_ai_panel("—", "—", "Camera off", 0.0, False)
+            if mode == "Word":
+                render_ai_panel("—", "—", "Camera off", 0.0, False)
+            else:
+                st.markdown(
+                    "<div style='color:#a78bfa;font-weight:700;font-size:1rem;margin-bottom:8px;'>"
+                    "🔤 Character Mode — A-Z + 0-9</div>",
+                    unsafe_allow_html=True,
+                )
+                st.info("Start the camera and hold a hand sign steady to spell characters.")
 
-        st.markdown('<hr style="border-color:rgba(99,102,241,0.12);">', unsafe_allow_html=True)
-        _render_sentence_builder(tts)
+        if mode == "Word":
+            st.markdown('<hr style="border-color:rgba(99,102,241,0.12);">', unsafe_allow_html=True)
+            _render_sentence_builder(tts)
 
-        st.markdown('<hr style="border-color:rgba(99,102,241,0.12);">', unsafe_allow_html=True)
-        last_gesture = st.session_state["sentence"][-1] if st.session_state["sentence"] else None
-        if last_gesture:
-            st.markdown('<div class="clay-section-title">🌐 Translations</div>', unsafe_allow_html=True)
-            translations = translate_all_languages(last_gesture)
-            limited = dict(list(translations.items())[:6])
-            render_translation_cards(limited)
+            st.markdown('<hr style="border-color:rgba(99,102,241,0.12);">', unsafe_allow_html=True)
+            last_gesture = st.session_state["sentence"][-1] if st.session_state["sentence"] else None
+            if last_gesture:
+                st.markdown('<div class="clay-section-title">🌐 Translations</div>', unsafe_allow_html=True)
+                translations = translate_all_languages(last_gesture)
+                limited = dict(list(translations.items())[:6])
+                render_translation_cards(limited)
 
-    if st.session_state["running"] and interp is not None:
-        _webcam_loop(
-            frame_ph, gesture_ph,
-            interp, in_idx, out_idx, label_map, scaler, detector, pose_det, tts,
-        )
+    # ── Launch the correct loop ───────────────────────────────────────────────
+    if st.session_state["running"]:
+        if mode == "Word" and interp is not None:
+            _webcam_loop(
+                frame_ph, gesture_ph,
+                interp, in_idx, out_idx, label_map, scaler, detector, tts,
+            )
+        elif mode == "Character" and c_interp is not None:
+            _char_webcam_loop(
+                frame_ph, gesture_ph,
+                c_interp, c_in, c_out, c_label_map, c_scaler, detector, tts,
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -963,10 +1268,17 @@ def main() -> None:
 
     # Load model resources (cached)
     (interp, in_idx, out_idx,
-     label_map, scaler, detector, pose_det, tts) = _load_resources()
+     label_map, scaler, detector, tts) = _load_resources()
 
     if interp is not None:
         st.session_state["model_loaded"] = True
+
+    # Load character model resources (cached, independent)
+    (c_interp, c_in, c_out,
+     c_label_map, c_scaler, _char_err) = _load_char_resources()
+
+    if c_interp is not None:
+        st.session_state["char_model_loaded"] = True
 
     # Sidebar + navigation
     _render_sidebar(tts)
@@ -979,7 +1291,8 @@ def main() -> None:
 
     elif page == "📷 Live Translator":
         _render_live_translator(
-            interp, in_idx, out_idx, label_map, scaler, detector, pose_det, tts
+            interp, in_idx, out_idx, label_map, scaler, detector, tts,
+            c_interp, c_in, c_out, c_label_map, c_scaler,
         )
 
     elif page == "📜 History":

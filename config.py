@@ -47,7 +47,7 @@ GESTURE_MEANINGS = {
 }
 
 # ── MediaPipe ─────────────────────────────────────────────────────────────────
-MAX_NUM_HANDS        = 1
+MAX_NUM_HANDS        = 2   # support both hands simultaneously
 MIN_DETECTION_CONF   = 0.7
 MIN_TRACKING_CONF    = 0.5
 NUM_LANDMARKS        = 21
@@ -123,17 +123,26 @@ LOW_CONFIDENCE_THRESHOLD = 0.70
 
 # ── Character Model Inference Thresholds ──────────────────────────────────────
 # Separate from word model — tune independently without affecting word mode.
-# Characters are static hand signs so a higher threshold is generally safe.
+# These defaults are deliberately conservative to avoid false positives;
+# the user can lower them further via the Settings slider in the app.
 WORD_CONFIDENCE_THRESHOLD      = 0.70   # min confidence for word model
-CHARACTER_CONFIDENCE_THRESHOLD = 0.70   # min confidence for character model
+
+# Character model: 0.60 is more forgiving than 0.70 while still filtering
+# noise. The DNN outputs near 100% on well-posed signs, but lighting/angle
+# variation on a webcam can push some frames down to 0.60–0.75.
+# Raise to 0.75+ if you see too many wrong characters; lower to 0.50 if
+# nothing gets recognised.
+CHARACTER_CONFIDENCE_THRESHOLD = 0.60   # min confidence for character model
 
 # How many consecutive stable frames before a CHARACTER is accepted.
-# Slightly higher than words to avoid runaway HHHEELLLOO duplicates.
-CHARACTER_STABLE_FRAME_COUNT   = 20
+# At 30 fps → 12 frames ≈ 0.4 s hold time.  Increase to reduce typos from
+# transient movements; decrease if response feels sluggish.
+CHARACTER_STABLE_FRAME_COUNT   = 12
 
-# How many frames of "silence" (no consistent prediction) before a new
-# character can be accepted again (debounce cooldown).
-CHARACTER_DEBOUNCE_FRAMES      = 15
+# How many frames of "silence" (no consistent prediction) that must pass
+# before the same character can be accepted again (prevents HHHELLO).
+# At 30 fps → 10 frames ≈ 0.3 s gap required between identical letters.
+CHARACTER_DEBOUNCE_FRAMES      = 10
 
 # ── TTS ───────────────────────────────────────────────────────────────────────
 TTS_RATE   = 150
