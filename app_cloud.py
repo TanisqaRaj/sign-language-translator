@@ -1444,7 +1444,6 @@ def page_analytics() -> None:
         lo  = snap.low_confidence_count
         tot = snap.total_gestures or 1
         hi_pct = int(hi / tot * 100)
-        lo_pct = int(lo / tot * 100)
         st.markdown(f"""
         <div class="clay-card">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px;">
@@ -1677,7 +1676,7 @@ def page_settings() -> None:
             st.session_state["conf_threshold"]        = CONFIDENCE_THRESHOLD
             st.session_state["stable_frames_cfg"]     = STABLE_FRAME_COUNT
             st.session_state["char_conf_threshold"]   = CHARACTER_CONFIDENCE_THRESHOLD
-            st.session_state["char_stable_frames_cfg"]= CHARACTER_STABLE_FRAME_COUNT
+            st.session_state["char_stable_frames_cfg"] = CHARACTER_STABLE_FRAME_COUNT
             st.success("Settings reset to defaults.")
             st.rerun()
 

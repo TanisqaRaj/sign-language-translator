@@ -213,7 +213,7 @@ def check_character_pipeline() -> bool:
             print(f"{WARN}  Sparse classes (<50 images): {sparse_classes[:10]}"
                   + ("…" if len(sparse_classes) > 10 else ""))
         if empty_classes or sparse_classes:
-            dataset_ok = False
+            dataset_ok = False  # noqa: F841
 
     # Step 2: Preprocessing
     print("\n[Step 2] Preprocessing — preprocess_characters.py")
@@ -318,8 +318,8 @@ def print_summary(word_ok: bool | None, char_ok: bool | None) -> None:
                     f for f in os.listdir(os.path.join(CHAR_DATASET_DIR, l))
                     if f.lower().endswith((".jpg", ".jpeg", ".png"))
                 ]) > 0
-                for l in CHARACTER_LABELS
-                if os.path.isdir(os.path.join(CHAR_DATASET_DIR, l))
+                for label in CHARACTER_LABELS
+                if os.path.isdir(os.path.join(CHAR_DATASET_DIR, label))
             )
             if char_dataset_empty:
                 print("    → python setup_character_dataset.py")
