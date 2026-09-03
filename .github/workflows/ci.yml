@@ -11,8 +11,8 @@
 #   5. Run linting with flake8
 #   6. Run unit tests with pytest
 #   7. Build Docker image
-#   8. Smoke-test the container (health-check endpoint)
-#   9. Push image to GHCR  (push events to main/master only)
+#   8. Docker health check smoke test (fails job if unhealthy)
+#   9. Push image to Docker Hub (push events to main/master only)
 # =============================================================================
 
 name: CI
@@ -24,8 +24,8 @@ on:
     branches: [main, master, develop]
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # lowercased in jobs that need it
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/sign-lang-translator
 
 jobs:
   # ── 1. Lint & Test ──────────────────────────────────────────────────────────
@@ -72,7 +72,6 @@ jobs:
     needs: test                 # only runs if tests pass
     permissions:
       contents: read
-      packages: write           # required to push to GHCR
 
     steps:
       - name: Checkout repository
@@ -85,28 +84,24 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Log in to GHCR only on push events (not on PRs – PRs can't have secrets)
-      - name: Log in to GitHub Container Registry
+      # Log in to Docker Hub only on push events (not on PRs – PRs can't have secrets)
+      - name: Log in to Docker Hub
         if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Generate smart image tags:
       #   latest         → always on main/master
       #   sha-<short>    → every push
       #   branch-<name>  → on feature branches
-      - name: Set lowercase image name
-        id: image_name
-        run: echo "value=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.value }}
+          images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
             type=sha,prefix=sha-,format=short
@@ -137,38 +132,42 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ── Smoke test: run the just-built image and hit the health endpoint ───
-      - name: Smoke test – container health check
+      # ── Smoke test: run the just-built image and verify Docker HEALTHCHECK ──
+      - name: Smoke test – Docker health check
         if: github.event_name == 'push'
         run: |
-          IMAGE="${{ env.REGISTRY }}/$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]'):latest"
-          echo "Starting container: $IMAGE"
+          IMAGE="${{ env.IMAGE_NAME }}:latest"
           docker run -d \
             --name smoke-test \
             -p 8501:8501 \
             -e STREAMLIT_SERVER_HEADLESS=true \
             "$IMAGE"
 
-          # Wait up to 45 s for Streamlit to be ready
-          echo "Waiting for health endpoint…"
-          for i in $(seq 1 15); do
+          # Poll Docker's own HEALTHCHECK status (defined in Dockerfile)
+          echo "Waiting for Docker health check to pass…"
+          HEALTHY=false
+          for i in $(seq 1 20); do
             STATUS=$(docker inspect --format='{{.State.Health.Status}}' smoke-test 2>/dev/null || echo "starting")
-            echo "  Attempt $i/15 → $STATUS"
+            echo "  Attempt $i/20 → $STATUS"
             if [ "$STATUS" = "healthy" ]; then
-              echo "Container is healthy!"
+              HEALTHY=true
+              break
+            elif [ "$STATUS" = "unhealthy" ]; then
+              echo "Container marked unhealthy!"
               break
             fi
-            sleep 3
+            sleep 5
           done
 
-          # Also try the endpoint directly
-          curl --silent --fail --retry 5 --retry-delay 3 \
-            http://localhost:8501/_stcore/health || true
-
-          # Show logs and clean up
           docker logs smoke-test
-          docker stop smoke-test
-          docker rm smoke-test
+          docker stop smoke-test && docker rm smoke-test
+
+          # Fail the CI job if container never became healthy
+          if [ "$HEALTHY" != "true" ]; then
+            echo "❌ Health check failed – container did not become healthy"
+            exit 1
+          fi
+          echo "✅ Container is healthy"
 
       - name: Output image digest
         if: github.event_name == 'push'

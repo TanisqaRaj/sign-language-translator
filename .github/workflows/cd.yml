@@ -3,10 +3,13 @@
 # Continuous Deployment – Sign Language Translator → Render
 #
 # Triggers automatically after CI passes on main/master.
-# Calls Render's deploy hook URL to trigger a re-deploy of the web service.
+# Steps:
+#   1. Trigger Render deploy hook
+#   2. Poll /_stcore/health until the live app is healthy (or timeout)
 #
-# ── Required GitHub Repository Secret ───────────────────────────────────────
-#   RENDER_DEPLOY_HOOK_URL   → copied from Render dashboard (see README)
+# ── Required GitHub Repository Secrets ──────────────────────────────────────
+#   RENDER_DEPLOY_HOOK_URL   → copied from Render dashboard
+#   RENDER_APP_URL           → e.g. https://your-app.onrender.com
 # =============================================================================
 
 name: CD
@@ -29,12 +32,32 @@ jobs:
           curl --silent --show-error --fail \
             "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
 
+      # Poll the live app's health endpoint until healthy or 5-minute timeout
+      - name: Wait for live health check
+        run: |
+          URL="${{ secrets.RENDER_APP_URL }}/_stcore/health"
+          echo "Polling $URL"
+          HEALTHY=false
+          for i in $(seq 1 30); do
+            HTTP=$(curl --silent --output /dev/null --write-out "%{http_code}" "$URL" || echo "000")
+            echo "  Attempt $i/30 → HTTP $HTTP"
+            if [ "$HTTP" = "200" ]; then
+              HEALTHY=true
+              break
+            fi
+            sleep 10
+          done
+
+          if [ "$HEALTHY" != "true" ]; then
+            echo "❌ Live health check failed after 5 minutes"
+            exit 1
+          fi
+          echo "✅ Live app is healthy"
+
       - name: Deployment summary
         if: success()
-        run: |
-          echo "### ✅ Render deploy triggered successfully" >> $GITHUB_STEP_SUMMARY
+        run: echo "### ✅ Deployed and healthy at ${{ secrets.RENDER_APP_URL }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Deployment failed
         if: failure()
-        run: |
-          echo "### ❌ Render deploy hook failed" >> $GITHUB_STEP_SUMMARY
+        run: echo "### ❌ Deploy or health check failed" >> $GITHUB_STEP_SUMMARY
