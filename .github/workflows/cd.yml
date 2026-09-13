@@ -33,7 +33,18 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
+      - name: Check secrets are configured
+        id: check_secrets
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ] || [ -z "${{ secrets.RENDER_APP_URL }}" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "⚠️ RENDER_DEPLOY_HOOK_URL or RENDER_APP_URL not set — skipping deployment"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Trigger Render deploy hook
+        if: steps.check_secrets.outputs.skip == 'false'
         run: |
           echo "Triggering Render deploy hook…"
           RESPONSE=$(curl --silent --show-error --write-out "\n%{http_code}" \
@@ -48,10 +59,8 @@ jobs:
           fi
           echo "✅ Deploy hook triggered successfully"
 
-      # Render needs time to pull the image and start the container.
-      # Streamlit itself needs ~30-40 s to load models on first start.
-      # We give up to 5 minutes total (30 × 10 s).
       - name: Wait for live health check
+        if: steps.check_secrets.outputs.skip == 'false'
         run: |
           URL="${{ secrets.RENDER_APP_URL }}/_stcore/health"
           echo "Polling $URL (up to 5 minutes)…"
