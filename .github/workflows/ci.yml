@@ -159,6 +159,7 @@ jobs:
         if: github.event_name == 'push'
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
           docker run -d \
             --name smoke-test \
             -p 8501:8501 \
