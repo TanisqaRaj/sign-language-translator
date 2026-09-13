@@ -6,6 +6,16 @@ secondaryBackgroundColor = "#141720"
 textColor = "#e0e0e0"
 
 [server]
+# Bind to all interfaces so Docker port mapping works correctly.
+# These values mirror the ENV vars in Dockerfile and are specified here
+# so they are also honoured when running outside Docker (e.g. Render's
+# native Streamlit runner or local `streamlit run app_cloud.py`).
 headless = true
+address = "localhost"
+port = 8501
 enableCORS = false
 enableXsrfProtection = false
+
+[browser]
+# Prevent Streamlit from trying to open a browser tab on the server
+gatherUsageStats = false

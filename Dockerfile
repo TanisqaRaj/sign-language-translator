@@ -19,9 +19,22 @@ FROM python:3.10-slim
 
 # ---------------------------------------------------------------------------
 # 1. System dependencies
-#    - libgl1 / libglib2.0-0 / libsm6 / libxext6 / libxrender-dev : OpenCV
-#    - libgomp1 : required by tflite-runtime on Linux
-#    - ca-certificates : HTTPS for deep-translator, WebRTC STUN
+#
+#    OpenCV:
+#      libgl1, libglib2.0-0, libsm6, libxext6, libxrender-dev
+#
+#    TFLite runtime:
+#      libgomp1 — OpenMP, required by tflite-runtime on Linux
+#
+#    aiortc / PyAV (video codec support for streamlit-webrtc):
+#      ffmpeg        — runtime codecs (H.264 decode, VP8/VP9)
+#      libavcodec-dev, libavformat-dev, libavdevice-dev — headers for PyAV build
+#      libvpx-dev    — VP8/VP9 codec (WebRTC default video codec)
+#      libopus-dev   — Opus audio codec (WebRTC default audio codec)
+#      libsrtp2-dev  — SRTP encryption required by WebRTC
+#
+#    HTTPS / WebRTC STUN:
+#      ca-certificates
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
@@ -31,6 +44,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxrender-dev \
         libgomp1 \
         ca-certificates \
+        ffmpeg \
+        libavcodec-dev \
+        libavformat-dev \
+        libavdevice-dev \
+        libvpx-dev \
+        libopus-dev \
+        libsrtp2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
@@ -57,7 +77,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY . .
 
 # ---------------------------------------------------------------------------
-# 5. Ensure the models directory is readable and logs directory writable
+# 5. Ensure the logs directory is writable
 # ---------------------------------------------------------------------------
 RUN mkdir -p logs \
     && chown -R appuser:appgroup /app
@@ -85,9 +105,19 @@ EXPOSE 8501
 # ---------------------------------------------------------------------------
 # 8. Health check
 #    Hits Streamlit's built-in /_stcore/health endpoint every 30 s.
-#    First check starts after a 15 s warm-up period.
+#
+#    start-period=60s: gives the container time to:
+#      - load mediapipe (first-time model download: ~5-10 s)
+#      - load tflite word model (~5 s)
+#      - load tflite character model (~5 s)
+#      - start Streamlit server (~5 s)
+#    Total cold-start is typically 25-40 s; 60 s gives comfortable headroom.
+#
+#    Without a long enough start-period the container is marked "unhealthy"
+#    before Streamlit is ready, which causes CI smoke tests and CD health
+#    checks to fail even though the app will eventually start correctly.
 # ---------------------------------------------------------------------------
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')" \
     || exit 1
 

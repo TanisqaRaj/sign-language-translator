@@ -1,8 +1,19 @@
 # =============================================================================
 # .dockerignore – Sign Language Translator
 # Excludes everything that should NOT be copied into the Docker image.
-# The gesture_model.tflite, movenet_lightning_fp16.tflite, and label_map.json
-# are intentionally NOT excluded – the app needs them at runtime.
+#
+# ── Model files that ARE included (required by app_cloud.py at runtime) ──────
+#   models/gesture_model.tflite       ← word model
+#   models/label_map.json             ← word label map
+#   models/scaler.pkl                 ← word scaler
+#   models/character_model.tflite     ← character model
+#   models/character_label_map.json   ← character label map
+#   models/character_scaler.pkl       ← character scaler
+#   models/movenet_lightning_fp16.tflite ← pose model (used by inference.py)
+#
+# ── Model files that are excluded (only needed for training, not inference) ──
+#   models/*.keras    ← large Keras training checkpoints (~700 KB each)
+#   models/*.h5       ← alternative Keras format
 # =============================================================================
 
 # ── Virtual environments ──────────────────────────────────────────────────────
@@ -19,19 +30,23 @@ __pycache__/
 *.pycache
 .pytest_cache/
 
-# ── Dataset (large image folders, not needed in production image) ─────────────
+# ── Dataset (large image folders — 500+ MB, not needed for inference) ─────────
 dataset/
 dataset.txt
+
+# ── CSV landmark files (training data only, NOT needed at runtime) ────────────
+# landmarks.csv          — word model training data  (~3 MB)
+# character_landmarks.csv — character model training data (~16 MB)
 landmarks.csv
+character_landmarks.csv
 landmarks.npy
 sample_check.jpg
 
 # ── Trained Keras / H5 model files (tflite is already converted) ──────────────
+# IMPORTANT: only *.keras and *.h5 are excluded.
+# All *.tflite, *.pkl, *.json model files ARE included.
 models/*.keras
 models/*.h5
-
-# NOTE: models/gesture_model.tflite, models/label_map.json, and models/scaler.pkl
-#       ARE included (required by app_cloud.py)
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 logs/

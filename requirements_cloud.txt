@@ -1,12 +1,17 @@
 # requirements_cloud.txt
-# Use this instead of requirements.txt when deploying to Streamlit Cloud,
-# Hugging Face Spaces, Render, or Railway.
+# Use this instead of requirements.txt when deploying to Docker, Render, Railway,
+# Hugging Face Spaces, or Streamlit Cloud.
 #
 # Key differences from requirements.txt:
 #   + streamlit-webrtc  – browser-based webcam (replaces cv2.VideoCapture)
 #   + aiortc            – WebRTC backend for streamlit-webrtc
 #   - pyttsx3           – removed (TTS handled by browser Web Speech API)
 #   - tensorflow        – replaced with tflite-runtime (smaller, faster install)
+#
+# System packages required in Docker (see Dockerfile):
+#   ffmpeg, libavcodec-dev, libavformat-dev, libavdevice-dev,
+#   libvpx-dev, libopus-dev, libsrtp2-dev
+#   (aiortc pip-installs PyAV from source and needs these headers)
 
 opencv-python-headless==4.9.0.80
 mediapipe==0.10.21
@@ -17,6 +22,7 @@ scikit-learn==1.4.2
 streamlit==1.35.0
 streamlit-webrtc==0.47.6
 aiortc==1.9.0
+av==12.3.0
 Pillow==10.3.0
 deep-translator==1.11.4
 tqdm==4.66.4

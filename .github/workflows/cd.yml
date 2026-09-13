@@ -4,12 +4,18 @@
 #
 # Triggers automatically after CI passes on main/master.
 # Steps:
-#   1. Trigger Render deploy hook
-#   2. Poll /_stcore/health until the live app is healthy (or timeout)
+#   1. Trigger Render deploy hook (Render pulls the new image from GHCR)
+#   2. Poll /_stcore/health until the live app is healthy (or 5-min timeout)
 #
 # ── Required GitHub Repository Secrets ──────────────────────────────────────
-#   RENDER_DEPLOY_HOOK_URL   → copied from Render dashboard
+#   RENDER_DEPLOY_HOOK_URL   → copied from Render dashboard (Settings → Deploy Hook)
 #   RENDER_APP_URL           → e.g. https://your-app.onrender.com
+#
+# ── How Render knows which image to pull ─────────────────────────────────────
+# Configure your Render service to use the Docker image:
+#   ghcr.io/<your-github-username>/sign-lang-translator:latest
+# Render will re-pull from GHCR when the deploy hook is triggered.
+# The image must be public, or you must add GHCR credentials in Render.
 # =============================================================================
 
 name: CD
@@ -29,17 +35,30 @@ jobs:
     steps:
       - name: Trigger Render deploy hook
         run: |
-          curl --silent --show-error --fail \
-            "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+          echo "Triggering Render deploy hook…"
+          RESPONSE=$(curl --silent --show-error --write-out "\n%{http_code}" \
+            "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -1)
+          echo "HTTP status: $HTTP_CODE"
+          echo "Response body: $BODY"
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "202" ]; then
+            echo "❌ Deploy hook returned unexpected status: $HTTP_CODE"
+            exit 1
+          fi
+          echo "✅ Deploy hook triggered successfully"
 
-      # Poll the live app's health endpoint until healthy or 5-minute timeout
+      # Render needs time to pull the image and start the container.
+      # Streamlit itself needs ~30-40 s to load models on first start.
+      # We give up to 5 minutes total (30 × 10 s).
       - name: Wait for live health check
         run: |
           URL="${{ secrets.RENDER_APP_URL }}/_stcore/health"
-          echo "Polling $URL"
+          echo "Polling $URL (up to 5 minutes)…"
           HEALTHY=false
           for i in $(seq 1 30); do
-            HTTP=$(curl --silent --output /dev/null --write-out "%{http_code}" "$URL" || echo "000")
+            HTTP=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+              --max-time 10 "$URL" || echo "000")
             echo "  Attempt $i/30 → HTTP $HTTP"
             if [ "$HTTP" = "200" ]; then
               HEALTHY=true
@@ -50,13 +69,16 @@ jobs:
 
           if [ "$HEALTHY" != "true" ]; then
             echo "❌ Live health check failed after 5 minutes"
+            echo "Check Render logs at: https://dashboard.render.com"
             exit 1
           fi
-          echo "✅ Live app is healthy"
+          echo "✅ Live app is healthy at ${{ secrets.RENDER_APP_URL }}"
 
       - name: Deployment summary
         if: success()
-        run: echo "### ✅ Deployed and healthy at ${{ secrets.RENDER_APP_URL }}" >> $GITHUB_STEP_SUMMARY
+        run: |
+          echo "### ✅ Deployed and healthy" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** ${{ secrets.RENDER_APP_URL }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Deployment failed
         if: failure()

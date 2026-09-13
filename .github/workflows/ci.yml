@@ -12,7 +12,14 @@
 #   6. Run unit tests with pytest
 #   7. Build Docker image
 #   8. Docker health check smoke test (fails job if unhealthy)
-#   9. Push image to Docker Hub (push events to main/master only)
+#   9. Push image to GHCR (push events to main/master only)
+#
+# ── Registry ────────────────────────────────────────────────────────────────
+# Images are pushed to GitHub Container Registry (GHCR):
+#   ghcr.io/<owner>/sign-lang-translator:latest
+#   ghcr.io/<owner>/sign-lang-translator:sha-<short>
+#
+# No extra secrets are needed — GITHUB_TOKEN handles GHCR authentication.
 # =============================================================================
 
 name: CI
@@ -24,8 +31,8 @@ on:
     branches: [main, master, develop]
 
 env:
-  REGISTRY: docker.io
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/sign-lang-translator
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/sign-lang-translator
 
 jobs:
   # ── 1. Lint & Test ──────────────────────────────────────────────────────────
@@ -50,6 +57,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      - name: Install system dependencies (needed for aiortc / av wheel build)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            libavcodec-dev \
+            libavformat-dev \
+            libavdevice-dev \
+            libvpx-dev \
+            libopus-dev \
+            libsrtp2-dev
+
       - name: Install dependencies
         run: pip install --no-cache-dir -r requirements_cloud.txt flake8 pytest
 
@@ -72,6 +91,7 @@ jobs:
     needs: test                 # only runs if tests pass
     permissions:
       contents: read
+      packages: write           # required to push to GHCR
 
     steps:
       - name: Checkout repository
@@ -84,14 +104,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Log in to Docker Hub only on push events (not on PRs – PRs can't have secrets)
-      - name: Log in to Docker Hub
+      # Log in to GHCR — uses GITHUB_TOKEN (auto-provided, no secrets needed)
+      - name: Log in to GitHub Container Registry
         if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Generate smart image tags:
       #   latest         → always on main/master
@@ -101,7 +121,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
             type=sha,prefix=sha-,format=short
@@ -133,10 +153,12 @@ jobs:
           cache-to: type=gha,mode=max
 
       # ── Smoke test: run the just-built image and verify Docker HEALTHCHECK ──
+      # start-period in Dockerfile is 60s — we poll for up to 90s (18 × 5s)
+      # to cover cold-start mediapipe + tflite model loading time (~30-40 s).
       - name: Smoke test – Docker health check
         if: github.event_name == 'push'
         run: |
-          IMAGE="${{ env.IMAGE_NAME }}:latest"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
           docker run -d \
             --name smoke-test \
             -p 8501:8501 \
@@ -144,17 +166,21 @@ jobs:
             "$IMAGE"
 
           # Poll Docker's own HEALTHCHECK status (defined in Dockerfile)
-          echo "Waiting for Docker health check to pass…"
+          # First check runs after start-period (60s), then every 30s.
+          # We wait up to 150s total (30 polls × 5s) to be safe.
+          echo "Waiting for Docker health check to pass (up to 150 s)…"
           HEALTHY=false
-          for i in $(seq 1 20); do
+          for i in $(seq 1 30); do
             STATUS=$(docker inspect --format='{{.State.Health.Status}}' smoke-test 2>/dev/null || echo "starting")
-            echo "  Attempt $i/20 → $STATUS"
+            echo "  Attempt $i/30 → $STATUS"
             if [ "$STATUS" = "healthy" ]; then
               HEALTHY=true
               break
             elif [ "$STATUS" = "unhealthy" ]; then
-              echo "Container marked unhealthy!"
-              break
+              echo "Container marked unhealthy — dumping logs:"
+              docker logs smoke-test
+              docker stop smoke-test && docker rm smoke-test
+              exit 1
             fi
             sleep 5
           done
@@ -164,11 +190,11 @@ jobs:
 
           # Fail the CI job if container never became healthy
           if [ "$HEALTHY" != "true" ]; then
-            echo "❌ Health check failed – container did not become healthy"
+            echo "❌ Health check timed out — container did not become healthy"
             exit 1
           fi
           echo "✅ Container is healthy"
 
       - name: Output image digest
         if: github.event_name == 'push'
-        run: echo "Image pushed successfully"
+        run: echo "Image pushed to ghcr.io/${{ env.IMAGE_NAME }}"
