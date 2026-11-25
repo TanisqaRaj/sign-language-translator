@@ -575,7 +575,6 @@ def render_sidebar() -> None:
 
         # ── Live stats ─────────────────────────────────────────────────────────
         with _lock:
-            _g   = _state["gesture"]
             _c   = _state["confidence"]
             _fps = _state["fps"]
 
